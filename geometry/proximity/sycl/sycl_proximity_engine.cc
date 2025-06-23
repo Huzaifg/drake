@@ -113,14 +113,16 @@ class SyclProximityEngine::Impl {
       for (size_t i = 0; i < num_elements; ++i) {
         const std::array<int, 4>& vertices = mesh_elements[i].getAllVertices();
         // Copy element by element to maintain lifetime safety
-        transfer_events.push_back(
-            q_device_.memcpy(mesh_data_.elements + element_offset + i,
-                             &vertices, sizeof(std::array<int, 4>)));
+        q_device_
+            .memcpy(mesh_data_.elements + element_offset + i, &vertices,
+                    sizeof(std::array<int, 4>))
+            .wait();
       }
-      // Fill in the mesh id for all elements in this mesh
-      transfer_events.push_back(
-          q_device_.fill(mesh_data_.element_mesh_ids + element_offset, id_index,
-                         num_elements));
+
+      q_device_
+          .fill(mesh_data_.element_mesh_ids + element_offset, id_index,
+                num_elements)
+          .wait();
 
       // Vertices
       transfer_events.push_back(q_device_.memcpy(
@@ -133,8 +135,10 @@ class SyclProximityEngine::Impl {
           num_vertices * sizeof(double)));
 
       // Fill in the mesh id for all vertices in this mesh
-      transfer_events.push_back(q_device_.fill(
-          mesh_data_.vertex_mesh_ids + vertex_offset, id_index, num_vertices));
+      q_device_
+          .fill(mesh_data_.vertex_mesh_ids + vertex_offset, id_index,
+                num_vertices)
+          .wait();
 
       // Inward Normals
       transfer_events.push_back(q_device_.memcpy(
@@ -167,11 +171,11 @@ class SyclProximityEngine::Impl {
         packed_gradient_pressure[i][3] = pressuresat_Mo[i];  // pressure at Mo
       }
 
-      // Transfer the packed data in a single operation
-      transfer_events.push_back(q_device_.memcpy(
-          mesh_data_.gradient_M_pressure_at_Mo + element_offset,
-          packed_gradient_pressure.data(),
-          num_elements * sizeof(Vector4<double>)));
+      q_device_
+          .memcpy(mesh_data_.gradient_M_pressure_at_Mo + element_offset,
+                  packed_gradient_pressure.data(),
+                  num_elements * sizeof(Vector4<double>))
+          .wait();
     }
 
     // ========================================

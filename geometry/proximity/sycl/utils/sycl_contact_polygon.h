@@ -1428,19 +1428,7 @@ sycl::event LaunchContactPolygonComputation(
         [[sycl::reqd_work_group_size(LOCAL_SIZE)]]
 #endif
         (sycl::nd_item<1> item) {
-          // ComputeContactPolygonsNoReturn(
-          //     item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
-          //     NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
-          //     EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
-          //     INWARD_NORMAL_OFFSET, RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
-          //     narrow_phase_check_indices, gradient_W_pressure_at_Wo,
-          //     element_offsets, vertex_offsets, element_mesh_ids, elements,
-          //     vertices_W, inward_normals_W, geom_collision_filter_num_cols,
-          //     total_checks_per_geometry, collision_filter_host_body_index,
-          //     narrow_phase_check_validity, polygon_areas, polygon_centroids,
-          //     polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
-          //     polygon_geom_index_A, polygon_geom_index_B, geometry_ids);
-          ComputeContactPolygons(
+          ComputeContactPolygonsNoReturn(
               item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
               NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
               EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
@@ -1452,6 +1440,18 @@ sycl::event LaunchContactPolygonComputation(
               narrow_phase_check_validity, polygon_areas, polygon_centroids,
               polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
               polygon_geom_index_A, polygon_geom_index_B, geometry_ids);
+          // ComputeContactPolygons(
+          //     item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
+          //     NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
+          //     EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
+          //     INWARD_NORMAL_OFFSET, RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
+          //     narrow_phase_check_indices, gradient_W_pressure_at_Wo,
+          //     element_offsets, vertex_offsets, element_mesh_ids, elements,
+          //     vertices_W, inward_normals_W, geom_collision_filter_num_cols,
+          //     total_checks_per_geometry, collision_filter_host_body_index,
+          //     narrow_phase_check_validity, polygon_areas, polygon_centroids,
+          //     polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
+          //     polygon_geom_index_A, polygon_geom_index_B, geometry_ids);
         });
   });
 }
