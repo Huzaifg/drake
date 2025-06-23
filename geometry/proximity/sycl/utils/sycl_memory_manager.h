@@ -191,25 +191,42 @@ class SyclMemoryHelper {
     mesh_data.vertex_mesh_ids = mem_mgr.AllocateDevice<size_t>(total_vertices);
   }
 
-  // Allocate collision detection memory
-  static inline void AllocateCollisionMemory(
+  // Allocate collision detection memory of arrays based on number of geometries
+  static inline void AllocateGeometryCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      size_t num_geometries, size_t total_checks,
-      size_t estimated_narrow_phase_checks) {
+      size_t num_geometries) {
+    collision_data.total_checks_per_geometry =
+        mem_mgr.AllocateHost<size_t>(num_geometries);
+    // geom_collision_filternum_cols[i] is the number of elements that need to
+    // be checked with each of the elements of the ith geometry
+    // Will be highest for 1st geometry and lowest for the last geometry (due to
+    // symmetric nature of collision_filter - we are only consider upper
+    // triangle)
+    collision_data.geom_collision_filter_num_cols =
+        mem_mgr.AllocateHost<size_t>(num_geometries);
+    // Stores the exclusive scan of total checks per geometry
+    collision_data.geom_collision_filter_check_offsets =
+        mem_mgr.AllocateHost<size_t>(num_geometries);
+  }
+
+  // Allocate collision detection memory of arrays based on total checks
+  static inline void AllocateTotalChecksCollisionMemory(
+      SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
+      size_t total_checks) {
     // Broad phase data
     collision_data.collision_filter =
         mem_mgr.AllocateDevice<uint8_t>(total_checks);
     collision_data.collision_filter_host_body_index =
         mem_mgr.AllocateHost<size_t>(total_checks);
-    collision_data.total_checks_per_geometry =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
-    collision_data.geom_collision_filter_num_cols =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
-    collision_data.geom_collision_filter_check_offsets =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
     collision_data.prefix_sum_total_checks =
         mem_mgr.AllocateDevice<size_t>(total_checks);
+  }
 
+  // Allocate collision detection memory of arrays based on estimated narrow
+  // phase checks
+  static inline void AllocateNarrowPhaseChecksCollisionMemory(
+      SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
+      size_t estimated_narrow_phase_checks) {
     // Narrow phase data
     collision_data.narrow_phase_check_indices =
         mem_mgr.AllocateDevice<size_t>(estimated_narrow_phase_checks);
@@ -306,6 +323,15 @@ class SyclMemoryHelper {
     mem_mgr.Free(collision_data.geom_collision_filter_num_cols);
     mem_mgr.Free(collision_data.geom_collision_filter_check_offsets);
     mem_mgr.Free(collision_data.prefix_sum_total_checks);
+    mem_mgr.Free(collision_data.narrow_phase_check_indices);
+    mem_mgr.Free(collision_data.narrow_phase_check_validity);
+    mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);
+  }
+
+  // Free only the collision detection memory of arrays based on narrow phase
+  // checks
+  static inline void FreeNarrowPhaseChecksCollisionMemory(
+      SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data) {
     mem_mgr.Free(collision_data.narrow_phase_check_indices);
     mem_mgr.Free(collision_data.narrow_phase_check_validity);
     mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);

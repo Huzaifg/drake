@@ -59,20 +59,7 @@ class SyclProximityEngine::Impl {
     // Get number of geometries
     num_geometries_ = soft_geometries.size();
 
-    // Allocate host memory for geometry IDs
-    mesh_data_.geometry_ids =
-        sycl::malloc_host<GeometryId>(num_geometries_, q_device_);
-
-    // Allocate device memory for lookup arrays
-    mesh_data_.element_offsets =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-    mesh_data_.vertex_offsets =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-    mesh_data_.element_counts =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-    mesh_data_.vertex_counts =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-
+    SyclMemoryHelper::AllocateMeshMemory(mem_mgr_, mesh_data_, num_geometries_);
     // First compute totals and build lookup data
     total_elements_ = 0;
     total_vertices_ = 0;
@@ -101,49 +88,8 @@ class SyclProximityEngine::Impl {
       total_vertices_ += num_vertices;
     }
 
-    // Allocate device memory for all meshes
-    mesh_data_.elements =
-        sycl::malloc_device<std::array<int, 4>>(total_elements_, q_device_);
-    mesh_data_.element_mesh_ids =
-        sycl::malloc_device<size_t>(total_elements_, q_device_);
-
-    mesh_data_.vertices_M =
-        sycl::malloc_device<Vector3<double>>(total_vertices_, q_device_);
-    mesh_data_.pressures =
-        sycl::malloc_device<double>(total_vertices_, q_device_);
-    mesh_data_.vertex_mesh_ids =
-        sycl::malloc_device<size_t>(total_vertices_, q_device_);
-
-    mesh_data_.inward_normals_M =
-        sycl::malloc_device<std::array<Vector3<double>, 4>>(total_elements_,
-                                                            q_device_);
-    mesh_data_.min_pressures =
-        sycl::malloc_device<double>(total_elements_, q_device_);
-    mesh_data_.max_pressures =
-        sycl::malloc_device<double>(total_elements_, q_device_);
-
-    // Allocate combined gradient and pressure arrays
-    mesh_data_.gradient_M_pressure_at_Mo =
-        sycl::malloc_device<Vector4<double>>(total_elements_, q_device_);
-
-    // Allocate even for world frame quantities
-    mesh_data_.vertices_W =
-        sycl::malloc_device<Vector3<double>>(total_vertices_, q_device_);
-    mesh_data_.inward_normals_W =
-        sycl::malloc_device<std::array<Vector3<double>, 4>>(total_elements_,
-                                                            q_device_);
-    mesh_data_.gradient_W_pressure_at_Wo =
-        sycl::malloc_device<Vector4<double>>(total_elements_, q_device_);
-
-    // Allocate device memory for transforms
-    mesh_data_.transforms =
-        sycl::malloc_host<double>(num_geometries_ * 12, q_device_);
-
-    // Allocate device memory for element AABBs
-    mesh_data_.element_aabb_min_W =
-        sycl::malloc_device<Vector3<double>>(total_elements_, q_device_);
-    mesh_data_.element_aabb_max_W =
-        sycl::malloc_device<Vector3<double>>(total_elements_, q_device_);
+    SyclMemoryHelper::AllocateMeshElementVerticesMemory(
+        mem_mgr_, mesh_data_, total_elements_, total_vertices_);
 
     // Copy data for each mesh
     std::vector<sycl::event> transfer_events;  // Store all transfer events
@@ -231,21 +177,8 @@ class SyclProximityEngine::Impl {
     // ========================================
     // Some pre-processing for broad phase collision detection
     // ========================================
-    // Stores at i the number of checks needs to be for the ith geometry
-    collision_data_.total_checks_per_geometry =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-
-    // geom_collision_filternum_cols[i] is the number of elements that need to
-    // be checked with each of the elements of the ith geometry
-    // Will be highest for 1st geometry and lowest for the last geometry (due to
-    // symmetric nature of collision_filter - we are only consider upper
-    // triangle)
-    collision_data_.geom_collision_filter_num_cols =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
-
-    // Stores the exclusive scan of total checks per geometry
-    collision_data_.geom_collision_filter_check_offsets =
-        sycl::malloc_host<size_t>(num_geometries_, q_device_);
+    SyclMemoryHelper::AllocateGeometryCollisionMemory(mem_mgr_, collision_data_,
+                                                      num_geometries_);
 
     num_elements_in_last_geometry_ =
         mesh_data_.element_counts[num_geometries_ - 1];
@@ -280,67 +213,19 @@ class SyclProximityEngine::Impl {
 
     // Resize based on the estimated narrow phase checks
     current_polygon_areas_size_ = estimated_narrow_phase_checks_;
-    polygon_data_.polygon_areas =
-        sycl::malloc_device<double>(current_polygon_areas_size_, q_device_);
-    // "3" is for each coordinate
-    polygon_data_.polygon_centroids = sycl::malloc_device<Vector3<double>>(
-        current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_normals = sycl::malloc_device<Vector3<double>>(
-        current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_g_M =
-        sycl::malloc_device<double>(current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_g_N =
-        sycl::malloc_device<double>(current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_pressure_W =
-        sycl::malloc_device<double>(current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_geom_index_A =
-        sycl::malloc_device<GeometryId>(current_polygon_areas_size_, q_device_);
-    polygon_data_.polygon_geom_index_B =
-        sycl::malloc_device<GeometryId>(current_polygon_areas_size_, q_device_);
-
-    // Allocate memory for narrow_phase_check_indices
-    current_narrow_phase_check_indices_size_ = estimated_narrow_phase_checks_;
-    collision_data_.narrow_phase_check_indices = sycl::malloc_device<size_t>(
-        current_narrow_phase_check_indices_size_, q_device_);
-    collision_data_.narrow_phase_check_validity = sycl::malloc_device<uint8_t>(
-        current_narrow_phase_check_indices_size_, q_device_);
-    collision_data_.prefix_sum_narrow_phase_checks =
-        sycl::malloc_device<size_t>(current_narrow_phase_check_indices_size_,
-                                    q_device_);
-
     // Resize compacted data structures based on the estimated polygon sizes
     current_polygon_indices_size_ = estimated_polygons_;
-    polygon_data_.compacted_polygon_areas =
-        sycl::malloc_device<double>(current_polygon_indices_size_, q_device_);
-    polygon_data_.compacted_polygon_centroids =
-        sycl::malloc_device<Vector3<double>>(current_polygon_indices_size_,
-                                             q_device_);
-    polygon_data_.compacted_polygon_normals =
-        sycl::malloc_device<Vector3<double>>(current_polygon_indices_size_,
-                                             q_device_);
-    polygon_data_.compacted_polygon_g_M =
-        sycl::malloc_device<double>(current_polygon_indices_size_, q_device_);
-    polygon_data_.compacted_polygon_g_N =
-        sycl::malloc_device<double>(current_polygon_indices_size_, q_device_);
-    polygon_data_.compacted_polygon_pressure_W =
-        sycl::malloc_device<double>(current_polygon_indices_size_, q_device_);
-    polygon_data_.compacted_polygon_geom_index_A =
-        sycl::malloc_device<GeometryId>(current_polygon_indices_size_,
-                                        q_device_);
-    polygon_data_.compacted_polygon_geom_index_B =
-        sycl::malloc_device<GeometryId>(current_polygon_indices_size_,
-                                        q_device_);
-    polygon_data_.valid_polygon_indices =
-        sycl::malloc_device<size_t>(current_polygon_indices_size_, q_device_);
 
-    // Generate collision filter for all checks
-    collision_data_.collision_filter =
-        sycl::malloc_device<uint8_t>(total_checks_, q_device_);
-    collision_data_.prefix_sum_total_checks =
-        sycl::malloc_device<size_t>(total_checks_, q_device_);
+    SyclMemoryHelper::AllocateTotalChecksCollisionMemory(
+        mem_mgr_, collision_data_, total_checks_);
+    SyclMemoryHelper::AllocateNarrowPhaseChecksCollisionMemory(
+        mem_mgr_, collision_data_, estimated_narrow_phase_checks_);
 
-    collision_data_.collision_filter_host_body_index =
-        sycl::malloc_host<size_t>(total_checks_, q_device_);
+    SyclMemoryHelper::AllocateFullPolygonMemory(mem_mgr_, polygon_data_,
+                                                estimated_narrow_phase_checks_);
+
+    SyclMemoryHelper::AllocateCompactPolygonMemory(mem_mgr_, polygon_data_,
+                                                   estimated_polygons_);
 
     // Fill in geometry index based on checks per geometry
     std::vector<sycl::event> collision_filter_host_body_indexfill_events;
@@ -381,58 +266,10 @@ class SyclProximityEngine::Impl {
   ~Impl() {
     // Free device memory
     if (num_geometries_ > 0) {
-      sycl::free(mesh_data_.geometry_ids, q_device_);
-
-      sycl::free(mesh_data_.element_offsets, q_device_);
-      sycl::free(mesh_data_.vertex_offsets, q_device_);
-      sycl::free(mesh_data_.element_counts, q_device_);
-      sycl::free(mesh_data_.vertex_counts, q_device_);
-      sycl::free(mesh_data_.element_mesh_ids, q_device_);
-      sycl::free(mesh_data_.vertex_mesh_ids, q_device_);
-
-      sycl::free(mesh_data_.elements, q_device_);
-      sycl::free(mesh_data_.vertices_M, q_device_);
-      sycl::free(mesh_data_.vertices_W, q_device_);
-      sycl::free(mesh_data_.inward_normals_M, q_device_);
-      sycl::free(mesh_data_.inward_normals_W, q_device_);
-      sycl::free(mesh_data_.pressures, q_device_);
-      sycl::free(mesh_data_.min_pressures, q_device_);
-      sycl::free(mesh_data_.max_pressures, q_device_);
-      sycl::free(mesh_data_.gradient_M_pressure_at_Mo, q_device_);
-      sycl::free(mesh_data_.gradient_W_pressure_at_Wo, q_device_);
-      sycl::free(mesh_data_.transforms, q_device_);
-
-      sycl::free(collision_data_.geom_collision_filter_num_cols, q_device_);
-      sycl::free(collision_data_.geom_collision_filter_check_offsets,
-                 q_device_);
-      sycl::free(collision_data_.collision_filter, q_device_);
-      sycl::free(collision_data_.total_checks_per_geometry, q_device_);
-      sycl::free(collision_data_.prefix_sum_total_checks, q_device_);
-
-      sycl::free(polygon_data_.polygon_areas, q_device_);
-      sycl::free(polygon_data_.polygon_centroids, q_device_);
-      sycl::free(polygon_data_.polygon_normals, q_device_);
-      sycl::free(polygon_data_.polygon_g_M, q_device_);
-      sycl::free(polygon_data_.polygon_g_N, q_device_);
-      sycl::free(polygon_data_.polygon_pressure_W, q_device_);
-      sycl::free(polygon_data_.polygon_geom_index_A, q_device_);
-      sycl::free(polygon_data_.polygon_geom_index_B, q_device_);
-
-      sycl::free(collision_data_.narrow_phase_check_indices, q_device_);
-      sycl::free(collision_data_.narrow_phase_check_validity, q_device_);
-      sycl::free(collision_data_.prefix_sum_narrow_phase_checks, q_device_);
-      sycl::free(polygon_data_.debug_polygon_vertices, q_device_);
-
-      sycl::free(polygon_data_.compacted_polygon_areas, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_centroids, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_normals, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_g_M, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_g_N, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_pressure_W, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_geom_index_A, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_geom_index_B, q_device_);
-
-      sycl::free(polygon_data_.valid_polygon_indices, q_device_);
+      SyclMemoryHelper::FreeMeshMemory(mem_mgr_, mesh_data_);
+      SyclMemoryHelper::FreeCollisionMemory(mem_mgr_, collision_data_);
+      SyclMemoryHelper::FreeFullPolygonMemory(mem_mgr_, polygon_data_);
+      SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
     }
   }
 
@@ -776,43 +613,16 @@ class SyclProximityEngine::Impl {
       size_t new_size = static_cast<size_t>(1.1 * total_narrow_phase_checks_);
 
       // Free old memory
-      sycl::free(polygon_data_.polygon_areas, q_device_);
-      sycl::free(polygon_data_.polygon_centroids, q_device_);
-      sycl::free(polygon_data_.polygon_normals, q_device_);
-      sycl::free(polygon_data_.polygon_g_M, q_device_);
-      sycl::free(polygon_data_.polygon_g_N, q_device_);
-      sycl::free(polygon_data_.polygon_pressure_W, q_device_);
-      sycl::free(polygon_data_.polygon_geom_index_A, q_device_);
-      sycl::free(polygon_data_.polygon_geom_index_B, q_device_);
-
-      sycl::free(collision_data_.narrow_phase_check_validity, q_device_);
-      sycl::free(collision_data_.prefix_sum_narrow_phase_checks, q_device_);
-      sycl::free(collision_data_.narrow_phase_check_indices, q_device_);
+      SyclMemoryHelper::FreeFullPolygonMemory(mem_mgr_, polygon_data_);
+      SyclMemoryHelper::FreeNarrowPhaseChecksCollisionMemory(mem_mgr_,
+                                                             collision_data_);
 
       // Allocate new memory with larger size
-      polygon_data_.polygon_areas =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.polygon_centroids =
-          sycl::malloc_device<Vector3<double>>(new_size, q_device_);
-      polygon_data_.polygon_normals =
-          sycl::malloc_device<Vector3<double>>(new_size, q_device_);
-      polygon_data_.polygon_g_M =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.polygon_g_N =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.polygon_pressure_W =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.polygon_geom_index_A =
-          sycl::malloc_device<GeometryId>(new_size, q_device_);
-      polygon_data_.polygon_geom_index_B =
-          sycl::malloc_device<GeometryId>(new_size, q_device_);
+      SyclMemoryHelper::AllocateFullPolygonMemory(mem_mgr_, polygon_data_,
+                                                  new_size);
+      SyclMemoryHelper::AllocateNarrowPhaseChecksCollisionMemory(
+          mem_mgr_, collision_data_, new_size);
 
-      collision_data_.narrow_phase_check_validity =
-          sycl::malloc_device<uint8_t>(new_size, q_device_);
-      collision_data_.prefix_sum_narrow_phase_checks =
-          sycl::malloc_device<size_t>(new_size, q_device_);
-      collision_data_.narrow_phase_check_indices =
-          sycl::malloc_device<size_t>(new_size, q_device_);
       current_polygon_areas_size_ = new_size;
     }
 
@@ -915,36 +725,11 @@ class SyclProximityEngine::Impl {
       // Give a 10 % bigger size
       size_t new_size = static_cast<size_t>(1.1 * total_polygons_);
 
-      // Free old memory
-      sycl::free(polygon_data_.compacted_polygon_areas, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_centroids, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_normals, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_g_M, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_g_N, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_pressure_W, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_geom_index_A, q_device_);
-      sycl::free(polygon_data_.compacted_polygon_geom_index_B, q_device_);
-      sycl::free(polygon_data_.valid_polygon_indices, q_device_);
+      SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
 
       // Allocate new memory with larger size
-      polygon_data_.compacted_polygon_areas =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.compacted_polygon_centroids =
-          sycl::malloc_device<Vector3<double>>(new_size, q_device_);
-      polygon_data_.compacted_polygon_normals =
-          sycl::malloc_device<Vector3<double>>(new_size, q_device_);
-      polygon_data_.compacted_polygon_g_M =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.compacted_polygon_g_N =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.compacted_polygon_pressure_W =
-          sycl::malloc_device<double>(new_size, q_device_);
-      polygon_data_.compacted_polygon_geom_index_A =
-          sycl::malloc_device<GeometryId>(new_size, q_device_);
-      polygon_data_.compacted_polygon_geom_index_B =
-          sycl::malloc_device<GeometryId>(new_size, q_device_);
-      polygon_data_.valid_polygon_indices =
-          sycl::malloc_device<size_t>(new_size, q_device_);
+      SyclMemoryHelper::AllocateCompactPolygonMemory(mem_mgr_, polygon_data_,
+                                                     new_size);
       current_polygon_indices_size_ = new_size;
     }
 
