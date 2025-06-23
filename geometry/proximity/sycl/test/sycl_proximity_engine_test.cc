@@ -84,7 +84,7 @@ GTEST_TEST(SPETest, SingleMesh) {
       {id, geometry}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries);
-  engine.UpdateCollisionCandidates({});
+  // engine.UpdateCollisionCandidates({});
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {id, RigidTransformd::Identity()}};
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
@@ -103,7 +103,7 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
       {idA, geometryA}, {idB, geometryB}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries);
-  engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB)});
+  // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB)});
   // Move meshes along Z so that they just intersect
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {idA, RigidTransformd(Vector3d{0, 0, 0})},
@@ -193,9 +193,9 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
       {idC, MakeSimpleSoftGeometry()}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries);
-  engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB),
-                                    SortedPair<GeometryId>(idA, idC),
-                                    SortedPair<GeometryId>(idB, idC)});
+  // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB),
+  //                                   SortedPair<GeometryId>(idA, idC),
+  //                                   SortedPair<GeometryId>(idB, idC)});
   // Move meshes along Z so that they just intersect
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {idA, RigidTransformd(Vector3d{0, 0, 0})},
@@ -340,8 +340,8 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
       soft_geometries);
 
   // Update collision candidates
-  engine.UpdateCollisionCandidates(
-      {SortedPair<GeometryId>(sphereA_id, sphereB_id)});
+  // engine.UpdateCollisionCandidates(
+  //     {SortedPair<GeometryId>(sphereA_id, sphereB_id)});
 
   // Move spheres closer so that they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
@@ -772,10 +772,10 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
       soft_geometries);
 
   // Update collision candidates
-  engine.UpdateCollisionCandidates(
-      {SortedPair<GeometryId>(sphereA_id, sphereB_id),
-       SortedPair<GeometryId>(sphereA_id, sphereC_id),
-       SortedPair<GeometryId>(sphereB_id, sphereC_id)});
+  // engine.UpdateCollisionCandidates(
+  //     {SortedPair<GeometryId>(sphereA_id, sphereB_id),
+  //      SortedPair<GeometryId>(sphereA_id, sphereC_id),
+  //      SortedPair<GeometryId>(sphereB_id, sphereC_id)});
 
   // Move spheres closer so that they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
