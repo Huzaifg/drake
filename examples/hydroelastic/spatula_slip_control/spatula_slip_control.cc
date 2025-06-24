@@ -47,7 +47,7 @@ DEFINE_string(contact_approximation, "tamsi",
               "Discrete contact approximation. Options are: 'tamsi', "
               "'sap', 'similar', 'lagged'");
 DEFINE_bool(
-    use_sycl_for_hydroelastic_contact, false,
+    use_sycl, false,
     "Use SYCL for hydroelastic contact. This flag is only used when "
     "the contact model is 'hydroelastic' or 'hydroelastic_with_fallback'.");
 
@@ -64,6 +64,8 @@ DEFINE_string(integration_scheme, "implicit_euler",
               "Integration scheme to be used. Available options are: "
               "'semi_explicit_euler','runge_kutta2','runge_kutta3',"
               "'implicit_euler'");
+
+DEFINE_int32(mesh_res, 5, "Mesh resolution hint for the spatula. In (mm)");
 
 namespace drake {
 
@@ -140,19 +142,25 @@ class Square final : public systems::LeafSystem<double> {
 void PrintPerformanceStats(
     const drake::multibody::MultibodyPlant<double>& plant,
     const drake::geometry::SceneGraph<double>& scene_graph,
-    const drake::systems::Context<double>& scene_graph_context,
-    bool sycl_used) {
-  constexpr const char* demo_name = "spatula_slip_control";
+    const drake::systems::Context<double>& scene_graph_context, bool sycl_used,
+    int mesh_res) {
+  std::string demo_name = "spatula_slip_control_" + std::to_string(mesh_res);
   std::string runtime_device = std::getenv("ONEAPI_DEVICE_SELECTOR");
-  std::string out_dir;
+  std::string out_dir = "/home/huzaifaunjhawala/drake/performance_jsons/";
+  std::string run_type;
   if (runtime_device == "cuda:*" || runtime_device.empty() ||
       runtime_device == "cuda:gpu" || !sycl_used) {
-    out_dir = "/home/huzaifaunjhawala/drake/performance_jsons/";
+    if (sycl_used) {
+      run_type = "sycl-gpu";
+    } else {
+      run_type = "drake-cpu";
+    }
   } else {
-    out_dir = "/home/huzaifaunjhawala/drake/performance_jsons_opencl/";
+    run_type = "sycl-cpu";
   }
-  std::string json_path = out_dir + "/" + demo_name +
-                          (sycl_used ? "_sycl" : "_cpu") + "_problem_size.json";
+
+  std::string json_path =
+      out_dir + "/" + demo_name + "_" + run_type + "_problem_size.json";
 
   // Ensure output directory exists
   if (!std::filesystem::exists(out_dir)) {
@@ -218,13 +226,12 @@ void PrintPerformanceStats(
       json_path, hydro_json.str());
 
   fmt::print("Timing Stats:\n");
-  json_path = out_dir + "/" + demo_name + (sycl_used ? "_sycl" : "_cpu") +
-              "_timing_overall.json";
+  json_path =
+      out_dir + "/" + demo_name + "_" + run_type + "_timing_overall.json";
 
   drake::common::CpuTimingLogger::GetInstance().PrintStats();
   drake::common::CpuTimingLogger::GetInstance().PrintStatsJson(json_path);
-  json_path = out_dir + "/" + demo_name + (sycl_used ? "_sycl" : "_cpu") +
-              "_timing.json";
+  json_path = out_dir + "/" + demo_name + "_" + run_type + "_timing.json";
   const auto& query_object =
       scene_graph.get_query_output_port().Eval<geometry::QueryObject<double>>(
           scene_graph_context);
@@ -255,7 +262,8 @@ int DoMain() {
       "schunk_wsg_50_hydro_bubble.sdf");
   parser.AddModelsFromUrl(
       "package://drake/examples/hydroelastic/spatula_slip_control/"
-      "spatula.sdf");
+      "spatula" +
+      std::to_string(FLAGS_mesh_res) + ".sdf");
   // Pose the gripper and weld it to the world.
   const math::RigidTransform<double> X_WF0 = math::RigidTransform<double>(
       math::RollPitchYaw(0.0, -1.57, 0.0), Eigen::Vector3d(0, 0, 0.25));
@@ -317,7 +325,7 @@ int DoMain() {
       math::RollPitchYaw(-0.4, 0.0, 1.57), Eigen::Vector3d(0.35, 0, 0.25));
   const auto& base_link = plant.GetBodyByName("spatula");
   plant.SetFreeBodyPose(&plant_context, base_link, X_WF1);
-  if (FLAGS_use_sycl_for_hydroelastic_contact) {
+  if (FLAGS_use_sycl) {
     if (FLAGS_contact_model == "hydroelastic" ||
         FLAGS_contact_model == "hydroelastic_with_fallback") {
       plant.set_sycl_for_hydroelastic_contact(true);
@@ -356,12 +364,12 @@ int DoMain() {
       "right_finger_bubble+spatula/"
       "contact_surface");
   meshcat->PublishRecording();
-  if (FLAGS_use_sycl_for_hydroelastic_contact) {
+  if (FLAGS_use_sycl) {
     PrintPerformanceStats(plant, scene_graph, scene_graph_context,
-                          /*sycl_used=*/true);
+                          /*sycl_used=*/true, FLAGS_mesh_res);
   } else {
     PrintPerformanceStats(plant, scene_graph, scene_graph_context,
-                          /*sycl_used=*/false);
+                          /*sycl_used=*/false, FLAGS_mesh_res);
   }
   return 0;
 }
