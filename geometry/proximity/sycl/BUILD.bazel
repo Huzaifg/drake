@@ -44,6 +44,7 @@ drake_cc_library(
     ],
     deps = [
         "//common:essential",
+        "//common:problem_size_logger",
         "//geometry:geometry_ids",
         "//math:geometric_transform",
         ":sycl_hydroelastic_surface",

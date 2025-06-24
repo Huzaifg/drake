@@ -14,6 +14,7 @@
 #include <oneapi/dpl/numeric>    // For exclusive_scan
 #include <sycl/sycl.hpp>
 
+#include "drake/common/problem_size_logger.h"
 #include "drake/geometry/geometry_ids.h"
 #include "drake/geometry/proximity/hydroelastic_internal.h"
 #include "drake/geometry/proximity/sycl/sycl_hydroelastic_surface.h"
@@ -625,6 +626,8 @@ class SyclProximityEngine::Impl {
     if (total_narrow_phase_checks_ == 0) {
       return {};
     }
+    drake::common::ProblemSizeLogger::GetInstance().AddCount(
+        "SYCLCandidateTets", total_narrow_phase_checks_);
 
     if (total_narrow_phase_checks_ > current_polygon_areas_size_) {
       // Give a 10 % bigger size
@@ -742,6 +745,8 @@ class SyclProximityEngine::Impl {
     if (total_polygons_ == 0) {
       return {};
     }
+    drake::common::ProblemSizeLogger::GetInstance().AddCount("SYCFacesInserted",
+                                                             total_polygons_);
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.StartKernel("compact_polygon_data");
 #endif

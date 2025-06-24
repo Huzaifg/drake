@@ -1,7 +1,10 @@
 #include <gflags/gflags.h>
 
+#include "drake/common/cpu_timing_logger.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/common/eigen_types.h"
+#include "drake/common/problem_size_logger.h"
+#include "drake/geometry/proximity_properties.h"
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant_config_functions.h"
 #include "drake/multibody/tree/prismatic_joint.h"
@@ -256,7 +259,51 @@ int DoMain() {
       "contact_surface");
   meshcat->PublishRecording();
 
+  fmt::print("Problem Size Stats:\n");
+  // Print the number of bodies with hydroelastic contact.
+  // (A body is counted if any of its collision geometries has hydroelastic
+  // properties.)
+  const auto& inspector = scene_graph.model_inspector();
+  int hydro_bodies = 0;
+  for (int i = 0; i < plant.num_bodies(); ++i) {
+    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
+    bool has_hydro = false;
+    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
+      const auto* props = inspector.GetProximityProperties(gid);
+      if (props &&
+          props->HasProperty(drake::geometry::internal::kHydroGroup,
+                             drake::geometry::internal::kComplianceType)) {
+        has_hydro = true;
+        break;
+      }
+    }
+    if (has_hydro) ++hydro_bodies;
+  }
+  fmt::print("Number of bodies with hydroelastic contact: {}\n", hydro_bodies);
+
+  // Print the number of tetrahedra in the hydroelastic mesh for each body (if
+  // any).
+  for (int i = 0; i < plant.num_bodies(); ++i) {
+    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
+    int tet_count = 0;
+    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
+      auto mesh_variant = inspector.maybe_get_hydroelastic_mesh(gid);
+      if (std::holds_alternative<const drake::geometry::VolumeMesh<double>*>(
+              mesh_variant)) {
+        const auto* mesh =
+            std::get<const drake::geometry::VolumeMesh<double>*>(mesh_variant);
+        if (mesh) tet_count += mesh->num_elements();
+      }
+    }
+    if (tet_count > 0) {
+      fmt::print("Body '{}' has {} tetrahedra in its hydroelastic mesh.\n",
+                 body.name(), tet_count);
+    }
+  }
+  drake::common::ProblemSizeLogger::GetInstance().PrintStats();
   //   systems::PrintSimulatorStatistics(simulator);
+  fmt::print("Timing Stats:\n");
+  drake::common::CpuTimingLogger::GetInstance().PrintStats();
   const auto& query_object =
       scene_graph.get_query_output_port().Eval<geometry::QueryObject<double>>(
           scene_graph_context);
