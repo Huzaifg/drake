@@ -22,6 +22,7 @@
 #include "drake/geometry/proximity/sycl/utils/sycl_hydroelastic_surface_creator.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_tetrahedron_slicing.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_timing_logger.h"
 #include "drake/math/rigid_transform.h"
 
 namespace drake {
@@ -40,13 +41,18 @@ namespace sycl_impl {
 class SyclProximityEngine::Impl {
  public:
   // Default constructor
-  Impl() : q_device_(InitializeQueue()), mem_mgr_(q_device_) {}
+  Impl()
+      : q_device_(InitializeQueue()), mem_mgr_(q_device_), timing_logger_() {}
 
   // Constructor that initializes with soft geometries
   Impl(const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>&
            soft_geometries)
-      : q_device_(InitializeQueue()), mem_mgr_(q_device_) {
+      : q_device_(InitializeQueue()), mem_mgr_(q_device_), timing_logger_() {
     DRAKE_THROW_UNLESS(soft_geometries.size() > 0);
+
+    // #ifdef DRAKE_SYCL_TIMING_ENABLED
+    //     timing_logger_.SetEnabled(true);
+    // #endif
 
     // Extract and sort geometry IDs for deterministic ordering
     std::vector<GeometryId> sorted_ids;
@@ -309,7 +315,9 @@ class SyclProximityEngine::Impl {
     if (total_checks_ == 0) {
       return {};
     }
-
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.StartKernel("unpack_transforms");
+#endif
     auto collision_filtermemset_event = q_device_.memset(
         collision_data_.collision_filter, 0, total_checks_ * sizeof(uint8_t));
 
@@ -330,7 +338,10 @@ class SyclProximityEngine::Impl {
         mesh_data_.transforms[geom_index * 12 + i] = transform(row, col);
       }
     }
-
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.EndKernel("unpack_transforms");
+    timing_logger_.StartKernel("transform_and_broad_phase");
+#endif
     // ========================================
     // Command group 1: Transform quantities to world frame
     // ========================================
@@ -608,6 +619,9 @@ class SyclProximityEngine::Impl {
     // If last check is 1, then we need to add one more check
     total_narrow_phase_checks_ += static_cast<size_t>(last_check_flag);
 
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.EndKernel("transform_and_broad_phase");
+#endif
     if (total_narrow_phase_checks_ == 0) {
       return {};
     }
@@ -671,7 +685,9 @@ class SyclProximityEngine::Impl {
     // Add polygon fill events to dependencies
     dependencies.insert(dependencies.end(), fill_events.begin(),
                         fill_events.end());
-
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.StartKernel("compute_contact_polygons");
+#endif
     sycl::event compute_contact_polygon_event;
     if (q_device_.get_device().get_info<sycl::info::device::device_type>() ==
         sycl::info::device_type::gpu) {
@@ -720,11 +736,15 @@ class SyclProximityEngine::Impl {
         .wait();
     // If last check is 1, then we need to add one more check
     total_polygons_ += static_cast<size_t>(last_check_flag);
-
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.EndKernel("compute_contact_polygons");
+#endif
     if (total_polygons_ == 0) {
       return {};
     }
-
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.StartKernel("compact_polygon_data");
+#endif
     if (total_polygons_ > current_polygon_indices_size_) {
       // Give a 10 % bigger size
       size_t new_size = static_cast<size_t>(1.1 * total_polygons_);
@@ -810,8 +830,11 @@ class SyclProximityEngine::Impl {
                 polygon_geom_index_B[check_index];
           });
     });
-
     compact_event.wait_and_throw();
+
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+    timing_logger_.EndKernel("compact_polygon_data");
+#endif
 
     // For now return a vector
     return {CreateHydroelasticSurface(
@@ -829,7 +852,13 @@ class SyclProximityEngine::Impl {
   // Helper method to initialize SYCL queue
   static sycl::queue InitializeQueue() {
     try {
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+      //   sycl::queue q(sycl::gpu_selector_v,
+      //                 sycl::property::queue::enable_profiling());
       sycl::queue q(sycl::gpu_selector_v);
+#else
+      sycl::queue q(sycl::gpu_selector_v);
+#endif
       std::cout << "Using "
                 << q.get_device().get_info<sycl::info::device::name>()
                 << std::endl;
@@ -837,7 +866,13 @@ class SyclProximityEngine::Impl {
     } catch (sycl::exception const& e) {
       std::cout << "Cannot select a GPU\n" << e.what() << std::endl;
       std::cout << "Using a CPU device" << std::endl;
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+      //   sycl::queue q(sycl::cpu_selector_v,
+      //                 sycl::property::queue::enable_profiling());
       sycl::queue q(sycl::cpu_selector_v);
+#else
+      sycl::queue q(sycl::cpu_selector_v);
+#endif
       std::cout << "Using "
                 << q.get_device().get_info<sycl::info::device::name>()
                 << std::endl;
@@ -856,6 +891,9 @@ class SyclProximityEngine::Impl {
   DeviceMeshData mesh_data_;
   DeviceCollisionData collision_data_;
   DevicePolygonData polygon_data_;
+
+  // Timing logger for kernel performance analysis
+  SyclTimingLogger timing_logger_;
 
   // The collision candidates.
   std::vector<SortedPair<GeometryId>> collision_candidates_;
@@ -930,6 +968,12 @@ std::vector<SYCLHydroelasticSurface>
 SyclProximityEngine::ComputeSYCLHydroelasticSurface(
     const std::unordered_map<GeometryId, math::RigidTransform<double>>& X_WGs) {
   return impl_->ComputeSYCLHydroelasticSurface(X_WGs);
+}
+
+void SyclProximityEngine::PrintTimingStats() const {
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+  SyclProximityEngineAttorney::PrintTimingStats(impl_.get());
+#endif
 }
 
 // SyclProximityEngineAttorney class definition
@@ -1091,6 +1135,13 @@ std::vector<double> SyclProximityEngineAttorney::get_debug_polygon_vertices(
            impl->current_debug_polygon_vertices_size_ * sizeof(double))
       .wait();
   return debug_polygon_vertices_host;
+}
+
+void SyclProximityEngineAttorney::PrintTimingStats(
+    SyclProximityEngine::Impl* impl) {
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+  impl->timing_logger_.PrintStats();
+#endif
 }
 
 }  // namespace sycl_impl

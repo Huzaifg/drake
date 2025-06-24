@@ -595,6 +595,13 @@ class GeometryState {
         representation, kinematics_data_.X_WGs);
   }
 
+  /** Implementation of QueryObject::PrintSyclTimingStats().  */
+  template <typename T1 = T>
+  typename std::enable_if_t<std::is_same_v<T1, double>, void>
+  PrintSyclTimingStats() const {
+    geometry_engine_->PrintSyclTimingStats();
+  }
+
   /** Implementation of QueryObject::ComputeContactSurfacesWithFallback().  */
   template <typename T1 = T>
   typename std::enable_if_t<scalar_predicate<T1>::is_bool, void>

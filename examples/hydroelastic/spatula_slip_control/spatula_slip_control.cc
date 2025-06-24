@@ -209,6 +209,8 @@ int DoMain() {
   Context<double>& plant_context =
       diagram->GetMutableSubsystemContext(plant, &mutable_root_context);
 
+  Context<double>& scene_graph_context =
+      diagram->GetMutableSubsystemContext(scene_graph, &mutable_root_context);
   // Set spatula's free body pose.
   const math::RigidTransform<double> X_WF1 = math::RigidTransform<double>(
       math::RollPitchYaw(-0.4, 0.0, 1.57), Eigen::Vector3d(0.35, 0, 0.25));
@@ -254,7 +256,11 @@ int DoMain() {
       "contact_surface");
   meshcat->PublishRecording();
 
-  systems::PrintSimulatorStatistics(simulator);
+  //   systems::PrintSimulatorStatistics(simulator);
+  const auto& query_object =
+      scene_graph.get_query_output_port().Eval<geometry::QueryObject<double>>(
+          scene_graph_context);
+  query_object.PrintSyclTimingStats();
   return 0;
 }
 

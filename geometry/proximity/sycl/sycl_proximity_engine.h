@@ -63,6 +63,10 @@ class SyclProximityEngine {
       const std::unordered_map<GeometryId, math::RigidTransform<double>>&
           X_WGs);
 
+  /* Prints timing statistics for all SYCL kernels if timing is enabled.
+   * This method has no effect if DRAKE_SYCL_TIMING_ENABLED is not defined. */
+  void PrintTimingStats() const;
+
  private:
   // The implementation class
   class Impl;
@@ -107,6 +111,9 @@ class SyclProximityEngineAttorney {
       SyclProximityEngine::Impl* impl);
   static std::vector<double> get_debug_polygon_vertices(
       SyclProximityEngine::Impl* impl);
+
+  // Timing logger access
+  static void PrintTimingStats(SyclProximityEngine::Impl* impl);
 };
 
 }  // namespace sycl_impl

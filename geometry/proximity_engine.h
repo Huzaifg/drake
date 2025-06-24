@@ -287,6 +287,13 @@ class ProximityEngine {
       const std::unordered_map<GeometryId, math::RigidTransform<T>>& X_WGs)
       const;
 
+  /* Prints timing statistics for all SYCL kernels if timing is enabled.
+   * This method has no effect if DRAKE_SYCL_TIMING_ENABLED is not defined.
+   * This method has no effect if SYCL is not available or not being used. */
+  template <typename T1 = T>
+  typename std::enable_if_t<std::is_same_v<T1, double>, void>
+  PrintSyclTimingStats() const;
+
   /* Implementation of GeometryState::ComputeDeformableContact(). Assumes
    the poses of rigid bodies and the vertex positions of the deformable bodies
    are up-to-date. */
