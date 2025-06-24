@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -76,6 +78,40 @@ class CpuTimingLogger {
       std::cout << "  Avg: " << stats.avg_time_us << " μs" << std::endl;
       std::cout << "  Total: " << stats.total_time_us << " μs" << std::endl;
       std::cout << std::endl;
+    }
+  }
+
+  // Print all timing statistics in JSON format
+  void PrintStatsJson(const std::string& path = "") const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::ostringstream oss;
+    oss << "{\n";
+    oss << "  \"timings\": {\n";
+    bool first = true;
+    for (const auto& [name, _] : timings_) {
+      if (!first) oss << ",\n";
+      first = false;
+      auto stats = GetStats(name);
+      oss << "    \"" << name << "\": {"
+          << "\"calls\": " << stats.call_count << ", "
+          << "\"min_us\": " << stats.min_time_us << ", "
+          << "\"max_us\": " << stats.max_time_us << ", "
+          << "\"avg_us\": " << stats.avg_time_us << ", "
+          << "\"total_us\": " << stats.total_time_us << "}";
+    }
+    oss << "\n  }\n";
+    oss << "}";
+
+    if (!path.empty()) {
+      std::ofstream ofs(path);
+      if (ofs.is_open()) {
+        ofs << oss.str();
+        ofs.close();
+      } else {
+        std::cerr << "Failed to open file for writing: " << path << std::endl;
+      }
+    } else {
+      std::cout << oss.str() << std::endl;
     }
   }
 

@@ -820,6 +820,14 @@ class ProximityEngine<T>::Impl : public ShapeReifier {
   }
 
   template <typename T1 = T>
+  typename std::enable_if_t<std::is_same_v<T1, double>, void>
+  PrintSyclTimingStatsJson(const std::string& path) const {
+    if (sycl_engine_) {
+      sycl_engine_->PrintTimingStatsJson(path);
+    }
+  }
+
+  template <typename T1 = T>
   typename std::enable_if_t<scalar_predicate<T1>::is_bool, void>
   ComputeContactSurfacesWithFallback(
       HydroelasticContactRepresentation representation,
@@ -1478,6 +1486,13 @@ ProximityEngine<T>::PrintSyclTimingStats() const {
 template <typename T>
 template <typename T1>
 typename std::enable_if_t<std::is_same_v<T1, double>, void>
+ProximityEngine<T>::PrintSyclTimingStatsJson(const std::string& path) const {
+  impl_->PrintSyclTimingStatsJson(path);
+}
+
+template <typename T>
+template <typename T1>
+typename std::enable_if_t<std::is_same_v<T1, double>, void>
 ProximityEngine<T>::ComputeDeformableContact(
     DeformableContact<T>* deformable_contact) const {
   impl_->ComputeDeformableContact(deformable_contact);
@@ -1546,6 +1561,9 @@ ProximityEngine<double>::ComputeContactSurfacesWithSycl<double>(
     const std::unordered_map<GeometryId, math::RigidTransform<double>>&) const;
 
 template void ProximityEngine<double>::PrintSyclTimingStats<double>() const;
+
+template void ProximityEngine<double>::PrintSyclTimingStatsJson<double>(
+    const std::string&) const;
 
 }  // namespace internal
 }  // namespace geometry

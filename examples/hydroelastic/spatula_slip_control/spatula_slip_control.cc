@@ -1,3 +1,6 @@
+#include <cstdlib>
+#include <filesystem>
+
 #include <gflags/gflags.h>
 
 #include "drake/common/cpu_timing_logger.h"
@@ -134,6 +137,101 @@ class Square final : public systems::LeafSystem<double> {
   const Eigen::VectorXd phase_;
 };
 
+void PrintPerformanceStats(
+    const drake::multibody::MultibodyPlant<double>& plant,
+    const drake::geometry::SceneGraph<double>& scene_graph,
+    const drake::systems::Context<double>& scene_graph_context,
+    bool sycl_used) {
+  constexpr const char* demo_name = "spatula_slip_control";
+  std::string runtime_device = std::getenv("ONEAPI_DEVICE_SELECTOR");
+  std::string out_dir;
+  if (runtime_device == "cuda:*" || runtime_device.empty() ||
+      runtime_device == "cuda:gpu" || !sycl_used) {
+    out_dir = "/home/huzaifaunjhawala/drake/performance_jsons/";
+  } else {
+    out_dir = "/home/huzaifaunjhawala/drake/performance_jsons_opencl/";
+  }
+  std::string json_path = out_dir + "/" + demo_name +
+                          (sycl_used ? "_sycl" : "_cpu") + "_problem_size.json";
+
+  // Ensure output directory exists
+  if (!std::filesystem::exists(out_dir)) {
+    std::cerr << "Performance output directory does not exist: " << out_dir
+              << std::endl;
+    return;
+  }
+
+  fmt::print("Problem Size Stats:\n");
+  const auto& inspector = scene_graph.model_inspector();
+  int hydro_bodies = 0;
+  std::ostringstream hydro_json;
+  hydro_json << "\"hydroelastic_bodies\": [";
+  bool first = true;
+  for (int i = 0; i < plant.num_bodies(); ++i) {
+    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
+    bool has_hydro = false;
+    int tet_count = 0;
+    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
+      const auto* props = inspector.GetProximityProperties(gid);
+      if (props &&
+          props->HasProperty(drake::geometry::internal::kHydroGroup,
+                             drake::geometry::internal::kComplianceType)) {
+        has_hydro = true;
+      }
+      auto mesh_variant = inspector.maybe_get_hydroelastic_mesh(gid);
+      if (std::holds_alternative<const drake::geometry::VolumeMesh<double>*>(
+              mesh_variant)) {
+        const auto* mesh =
+            std::get<const drake::geometry::VolumeMesh<double>*>(mesh_variant);
+        if (mesh) tet_count += mesh->num_elements();
+      }
+    }
+    if (has_hydro) ++hydro_bodies;
+    if (tet_count > 0) {
+      if (!first) hydro_json << ",";
+      first = false;
+      hydro_json << "{ \"body\": \"" << body.name()
+                 << "\", \"tetrahedra\": " << tet_count << "}";
+    }
+  }
+  hydro_json << "]";
+  fmt::print("Number of bodies with hydroelastic contact: {}\n", hydro_bodies);
+  for (int i = 0; i < plant.num_bodies(); ++i) {
+    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
+    int tet_count = 0;
+    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
+      auto mesh_variant = inspector.maybe_get_hydroelastic_mesh(gid);
+      if (std::holds_alternative<const drake::geometry::VolumeMesh<double>*>(
+              mesh_variant)) {
+        const auto* mesh =
+            std::get<const drake::geometry::VolumeMesh<double>*>(mesh_variant);
+        if (mesh) tet_count += mesh->num_elements();
+      }
+    }
+    if (tet_count > 0) {
+      fmt::print("Body '{}' has {} tetrahedra in its hydroelastic mesh.\n",
+                 body.name(), tet_count);
+    }
+  }
+  drake::common::ProblemSizeLogger::GetInstance().PrintStats();
+  drake::common::ProblemSizeLogger::GetInstance().PrintStatsJson(
+      json_path, hydro_json.str());
+
+  fmt::print("Timing Stats:\n");
+  json_path = out_dir + "/" + demo_name + (sycl_used ? "_sycl" : "_cpu") +
+              "_timing_overall.json";
+
+  drake::common::CpuTimingLogger::GetInstance().PrintStats();
+  drake::common::CpuTimingLogger::GetInstance().PrintStatsJson(json_path);
+  json_path = out_dir + "/" + demo_name + (sycl_used ? "_sycl" : "_cpu") +
+              "_timing.json";
+  const auto& query_object =
+      scene_graph.get_query_output_port().Eval<geometry::QueryObject<double>>(
+          scene_graph_context);
+  query_object.PrintSyclTimingStats();
+  query_object.PrintSyclTimingStatsJson(json_path);
+}
+
 int DoMain() {
   // Construct a MultibodyPlant and a SceneGraph.
   systems::DiagramBuilder<double> builder;
@@ -258,56 +356,13 @@ int DoMain() {
       "right_finger_bubble+spatula/"
       "contact_surface");
   meshcat->PublishRecording();
-
-  fmt::print("Problem Size Stats:\n");
-  // Print the number of bodies with hydroelastic contact.
-  // (A body is counted if any of its collision geometries has hydroelastic
-  // properties.)
-  const auto& inspector = scene_graph.model_inspector();
-  int hydro_bodies = 0;
-  for (int i = 0; i < plant.num_bodies(); ++i) {
-    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
-    bool has_hydro = false;
-    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
-      const auto* props = inspector.GetProximityProperties(gid);
-      if (props &&
-          props->HasProperty(drake::geometry::internal::kHydroGroup,
-                             drake::geometry::internal::kComplianceType)) {
-        has_hydro = true;
-        break;
-      }
-    }
-    if (has_hydro) ++hydro_bodies;
+  if (FLAGS_use_sycl_for_hydroelastic_contact) {
+    PrintPerformanceStats(plant, scene_graph, scene_graph_context,
+                          /*sycl_used=*/true);
+  } else {
+    PrintPerformanceStats(plant, scene_graph, scene_graph_context,
+                          /*sycl_used=*/false);
   }
-  fmt::print("Number of bodies with hydroelastic contact: {}\n", hydro_bodies);
-
-  // Print the number of tetrahedra in the hydroelastic mesh for each body (if
-  // any).
-  for (int i = 0; i < plant.num_bodies(); ++i) {
-    const auto& body = plant.get_body(drake::multibody::BodyIndex(i));
-    int tet_count = 0;
-    for (const auto& gid : plant.GetCollisionGeometriesForBody(body)) {
-      auto mesh_variant = inspector.maybe_get_hydroelastic_mesh(gid);
-      if (std::holds_alternative<const drake::geometry::VolumeMesh<double>*>(
-              mesh_variant)) {
-        const auto* mesh =
-            std::get<const drake::geometry::VolumeMesh<double>*>(mesh_variant);
-        if (mesh) tet_count += mesh->num_elements();
-      }
-    }
-    if (tet_count > 0) {
-      fmt::print("Body '{}' has {} tetrahedra in its hydroelastic mesh.\n",
-                 body.name(), tet_count);
-    }
-  }
-  drake::common::ProblemSizeLogger::GetInstance().PrintStats();
-  //   systems::PrintSimulatorStatistics(simulator);
-  fmt::print("Timing Stats:\n");
-  drake::common::CpuTimingLogger::GetInstance().PrintStats();
-  const auto& query_object =
-      scene_graph.get_query_output_port().Eval<geometry::QueryObject<double>>(
-          scene_graph_context);
-  query_object.PrintSyclTimingStats();
   return 0;
 }
 

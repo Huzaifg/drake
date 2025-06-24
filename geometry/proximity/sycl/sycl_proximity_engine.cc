@@ -981,6 +981,12 @@ void SyclProximityEngine::PrintTimingStats() const {
 #endif
 }
 
+void SyclProximityEngine::PrintTimingStatsJson(const std::string& path) const {
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+  SyclProximityEngineAttorney::PrintTimingStatsJson(impl_.get(), path);
+#endif
+}
+
 // SyclProximityEngineAttorney class definition
 SyclProximityEngine::Impl* SyclProximityEngineAttorney::get_impl(
     SyclProximityEngine& engine) {
@@ -1146,6 +1152,13 @@ void SyclProximityEngineAttorney::PrintTimingStats(
     SyclProximityEngine::Impl* impl) {
 #ifdef DRAKE_SYCL_TIMING_ENABLED
   impl->timing_logger_.PrintStats();
+#endif
+}
+
+void SyclProximityEngineAttorney::PrintTimingStatsJson(
+    SyclProximityEngine::Impl* impl, const std::string& path) {
+#ifdef DRAKE_SYCL_TIMING_ENABLED
+  impl->timing_logger_.PrintStatsJson(path);
 #endif
 }
 

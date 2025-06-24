@@ -758,6 +758,13 @@ class GeometryState {
 
   //@}
 
+  /** Implementation of QueryObject::PrintSyclTimingStatsJson().  */
+  template <typename T1 = T>
+  typename std::enable_if_t<std::is_same_v<T1, double>, void>
+  PrintSyclTimingStatsJson(const std::string& path) const {
+    geometry_engine_->PrintSyclTimingStatsJson(path);
+  }
+
  private:
   // GeometryState of one scalar type is friends with all other scalar types.
   template <typename>

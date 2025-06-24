@@ -171,6 +171,15 @@ QueryObject<T>::PrintSyclTimingStats() const {
 
 template <typename T>
 template <typename T1>
+typename std::enable_if_t<std::is_same_v<T1, double>, void>
+QueryObject<T>::PrintSyclTimingStatsJson(const std::string& path) const {
+  ThrowIfNotCallable();
+  const GeometryState<T>& state = geometry_state();
+  state.PrintSyclTimingStatsJson(path);
+}
+
+template <typename T>
+template <typename T1>
 typename std::enable_if_t<scalar_predicate<T1>::is_bool, void>
 QueryObject<T>::ComputeContactSurfacesWithFallback(
     HydroelasticContactRepresentation representation,
@@ -303,6 +312,9 @@ template std::vector<internal::sycl_impl::SYCLHydroelasticSurface>
         HydroelasticContactRepresentation) const;
 
 template void QueryObject<double>::PrintSyclTimingStats<double>() const;
+
+template void QueryObject<double>::PrintSyclTimingStatsJson<double>(
+    const std::string&) const;
 
 }  // namespace geometry
 }  // namespace drake

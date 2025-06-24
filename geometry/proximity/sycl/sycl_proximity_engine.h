@@ -67,6 +67,11 @@ class SyclProximityEngine {
    * This method has no effect if DRAKE_SYCL_TIMING_ENABLED is not defined. */
   void PrintTimingStats() const;
 
+  /* Prints timing statistics for all SYCL kernels in JSON format if timing is
+   * enabled. This method has no effect if DRAKE_SYCL_TIMING_ENABLED is not
+   * defined. */
+  void PrintTimingStatsJson(const std::string& path) const;
+
  private:
   // The implementation class
   class Impl;
@@ -114,6 +119,8 @@ class SyclProximityEngineAttorney {
 
   // Timing logger access
   static void PrintTimingStats(SyclProximityEngine::Impl* impl);
+  static void PrintTimingStatsJson(SyclProximityEngine::Impl* impl,
+                                   const std::string& path);
 };
 
 }  // namespace sycl_impl

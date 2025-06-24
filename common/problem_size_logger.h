@@ -1,11 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,52 @@ class ProblemSizeLogger {
       std::cout << "  Avg: " << stats.avg << std::endl;
       std::cout << "  Total: " << stats.total << std::endl;
       std::cout << std::endl;
+    }
+  }
+
+  // Print all problem size statistics in JSON format
+  void PrintStatsJson(const std::string& path = "") const {
+    PrintStatsJson(path, "");
+  }
+
+  // Overload: Print all problem size statistics in JSON format, with extra JSON
+  // fields
+  void PrintStatsJson(const std::string& path,
+                      const std::string& extra_json) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::ostringstream oss;
+    oss << "{\n";
+    oss << "  \"problem_sizes\": {\n";
+    bool first = true;
+    for (const auto& [name, _] : counts_) {
+      if (!first) oss << ",\n";
+      first = false;
+      auto stats = GetStats(name);
+      oss << "    \"" << name << "\": {"
+          << "\"calls\": " << stats.call_count << ", "
+          << "\"min\": " << stats.min << ", "
+          << "\"max\": " << stats.max << ", "
+          << "\"avg\": " << stats.avg << ", "
+          << "\"total\": " << stats.total << "}";
+    }
+    oss << "\n  }";
+    if (!extra_json.empty()) {
+      oss << ",\n" << extra_json << "\n";
+    } else {
+      oss << "\n";
+    }
+    oss << "}";
+
+    if (!path.empty()) {
+      std::ofstream ofs(path);
+      if (ofs.is_open()) {
+        ofs << oss.str();
+        ofs.close();
+      } else {
+        std::cerr << "Failed to open file for writing: " << path << std::endl;
+      }
+    } else {
+      std::cout << oss.str() << std::endl;
     }
   }
 
