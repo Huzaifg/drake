@@ -82,7 +82,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     const Vector3<double>* vertices_W,
     const std::array<Vector3<double>, 4>* inward_normals_W,
     const size_t* geom_collision_filter_num_cols,
-    const size_t* total_checks_per_geometry,
+    const size_t* geom_collision_filter_check_offsets,
     const size_t* collision_filter_host_body_index,
     uint8_t* narrow_phase_check_validity, double* polygon_areas,
     Vector3<double>* polygon_centroids, Vector3<double>* polygon_normals,
@@ -143,10 +143,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     host_body_index = collision_filter_host_body_index[global_check_index];
 
     // Same logic as broad phase
-    size_t num_of_checks_offset = 0;
-    if (host_body_index > 0) {
-      num_of_checks_offset = total_checks_per_geometry[host_body_index - 1];
-    }
+    size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
     geom_local_check_number = global_check_index - num_of_checks_offset;
 
     A_element_index = element_offsets[host_body_index] +
@@ -702,7 +699,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
     const Vector3<double>* vertices_W,
     const std::array<Vector3<double>, 4>* inward_normals_W,
     const size_t* geom_collision_filter_num_cols,
-    const size_t* total_checks_per_geometry,
+    const size_t* geom_collision_filter_check_offsets,
     const size_t* collision_filter_host_body_index,
     uint8_t* narrow_phase_check_validity, double* polygon_areas,
     Vector3<double>* polygon_centroids, Vector3<double>* polygon_normals,
@@ -752,10 +749,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
       collision_filter_host_body_index[global_check_index];
 
   // Same logic as broad phase
-  size_t num_of_checks_offset = 0;
-  if (host_body_index > 0) {
-    num_of_checks_offset = total_checks_per_geometry[host_body_index - 1];
-  }
+  size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
   const size_t geom_local_check_number =
       global_check_index - num_of_checks_offset;
 
@@ -1399,7 +1393,7 @@ sycl::event LaunchContactPolygonComputation(
          inward_normals_W = mesh_data.inward_normals_W,
          geom_collision_filter_num_cols =
              collision_data.geom_collision_filter_num_cols,
-         total_checks_per_geometry = collision_data.total_checks_per_geometry,
+         geom_collision_filter_check_offsets = collision_data.geom_collision_filter_check_offsets,
          collision_filter_host_body_index =
              collision_data.collision_filter_host_body_index,
          narrow_phase_check_validity =
@@ -1436,7 +1430,7 @@ sycl::event LaunchContactPolygonComputation(
               narrow_phase_check_indices, gradient_W_pressure_at_Wo,
               element_offsets, vertex_offsets, element_mesh_ids, elements,
               vertices_W, inward_normals_W, geom_collision_filter_num_cols,
-              total_checks_per_geometry, collision_filter_host_body_index,
+              geom_collision_filter_check_offsets, collision_filter_host_body_index,
               narrow_phase_check_validity, polygon_areas, polygon_centroids,
               polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
               polygon_geom_index_A, polygon_geom_index_B, geometry_ids);

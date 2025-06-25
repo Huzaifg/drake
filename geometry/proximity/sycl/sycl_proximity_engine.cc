@@ -523,13 +523,13 @@ class SyclProximityEngine::Impl {
               [=, collision_filter = collision_data_.collision_filter,
                collision_filter_host_body_index =
                    collision_data_.collision_filter_host_body_index,
+               geom_collision_filter_check_offsets =
+                   collision_data_.geom_collision_filter_check_offsets,
                geom_collision_filter_num_cols =
                    collision_data_.geom_collision_filter_num_cols,
                element_offsets = mesh_data_.element_offsets,
                element_aabb_min_W = mesh_data_.element_aabb_min_W,
                element_aabb_max_W = mesh_data_.element_aabb_max_W,
-               total_checks_per_geometry =
-                   collision_data_.total_checks_per_geometry,
                min_pressures = mesh_data_.min_pressures,
                max_pressures = mesh_data_.max_pressures](sycl::id<1> idx) {
                 const size_t check_index = idx[0];
@@ -538,11 +538,7 @@ class SyclProximityEngine::Impl {
                 // What elements is this check_index checking?
                 // host_body_index is the geometry index that element A belongs
                 // to
-                size_t num_of_checks_offset = 0;
-                if (host_body_index > 0) {
-                  num_of_checks_offset =
-                      total_checks_per_geometry[host_body_index - 1];
-                }
+                size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
                 const size_t geom_local_check_number =
                     check_index - num_of_checks_offset;
 
