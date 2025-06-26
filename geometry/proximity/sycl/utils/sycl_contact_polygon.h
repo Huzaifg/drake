@@ -143,7 +143,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     host_body_index = collision_filter_host_body_index[global_check_index];
 
     // Same logic as broad phase
-    size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
+    size_t num_of_checks_offset =
+        geom_collision_filter_check_offsets[host_body_index];
     geom_local_check_number = global_check_index - num_of_checks_offset;
 
     A_element_index = element_offsets[host_body_index] +
@@ -749,7 +750,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
       collision_filter_host_body_index[global_check_index];
 
   // Same logic as broad phase
-  size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
+  size_t num_of_checks_offset =
+      geom_collision_filter_check_offsets[host_body_index];
   const size_t geom_local_check_number =
       global_check_index - num_of_checks_offset;
 
@@ -1393,7 +1395,8 @@ sycl::event LaunchContactPolygonComputation(
          inward_normals_W = mesh_data.inward_normals_W,
          geom_collision_filter_num_cols =
              collision_data.geom_collision_filter_num_cols,
-         geom_collision_filter_check_offsets = collision_data.geom_collision_filter_check_offsets,
+         geom_collision_filter_check_offsets =
+             collision_data.geom_collision_filter_check_offsets,
          collision_filter_host_body_index =
              collision_data.collision_filter_host_body_index,
          narrow_phase_check_validity =
@@ -1430,10 +1433,11 @@ sycl::event LaunchContactPolygonComputation(
               narrow_phase_check_indices, gradient_W_pressure_at_Wo,
               element_offsets, vertex_offsets, element_mesh_ids, elements,
               vertices_W, inward_normals_W, geom_collision_filter_num_cols,
-              geom_collision_filter_check_offsets, collision_filter_host_body_index,
-              narrow_phase_check_validity, polygon_areas, polygon_centroids,
-              polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
-              polygon_geom_index_A, polygon_geom_index_B, geometry_ids);
+              geom_collision_filter_check_offsets,
+              collision_filter_host_body_index, narrow_phase_check_validity,
+              polygon_areas, polygon_centroids, polygon_normals, polygon_g_M,
+              polygon_g_N, polygon_pressure_W, polygon_geom_index_A,
+              polygon_geom_index_B, geometry_ids);
           // ComputeContactPolygons(
           //     item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
           //     NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
@@ -1442,10 +1446,11 @@ sycl::event LaunchContactPolygonComputation(
           //     narrow_phase_check_indices, gradient_W_pressure_at_Wo,
           //     element_offsets, vertex_offsets, element_mesh_ids, elements,
           //     vertices_W, inward_normals_W, geom_collision_filter_num_cols,
-          //     total_checks_per_geometry, collision_filter_host_body_index,
-          //     narrow_phase_check_validity, polygon_areas, polygon_centroids,
-          //     polygon_normals, polygon_g_M, polygon_g_N, polygon_pressure_W,
-          //     polygon_geom_index_A, polygon_geom_index_B, geometry_ids);
+          //     geom_collision_filter_check_offsets,
+          //     collision_filter_host_body_index, narrow_phase_check_validity,
+          //     polygon_areas, polygon_centroids, polygon_normals, polygon_g_M,
+          //     polygon_g_N, polygon_pressure_W, polygon_geom_index_A,
+          //     polygon_geom_index_B, geometry_ids);
         });
   });
 }

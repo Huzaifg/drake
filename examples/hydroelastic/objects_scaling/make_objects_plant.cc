@@ -40,8 +40,9 @@ class ObjectPlacer {
         object_spacing_(object_spacing),
         layer_height_(layer_height),
         current_z_(initial_height),
-        current_x_(-floor_width / 2.0 + object_spacing / 2.0),
-        current_y_(-floor_depth / 2.0 + object_spacing / 2.0) {}
+        current_x_(-floor_width / 2.0 +
+                   0.15 / 2.0),  // Hard code for sufficient distance of edge
+        current_y_(-floor_depth / 2.0 + 0.15 / 2.0) {}
 
   Vector3d GetNextPosition() {
     Vector3d position(current_x_, current_y_, current_z_);

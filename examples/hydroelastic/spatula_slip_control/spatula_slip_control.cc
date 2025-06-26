@@ -67,6 +67,8 @@ DEFINE_string(integration_scheme, "implicit_euler",
 
 DEFINE_int32(mesh_res, 5, "Mesh resolution hint for the spatula. In (mm)");
 
+DEFINE_bool(print_perf, true, "Print performance statistics");
+
 namespace drake {
 
 using geometry::SceneGraph;
@@ -145,16 +147,17 @@ void PrintPerformanceStats(
     const drake::systems::Context<double>& scene_graph_context, bool sycl_used,
     int mesh_res) {
   std::string demo_name = "spatula_slip_control_" + std::to_string(mesh_res);
-  std::string runtime_device = std::getenv("ONEAPI_DEVICE_SELECTOR");
+  std::string runtime_device;
+  const char* env_var = std::getenv("ONEAPI_DEVICE_SELECTOR");
+  if (env_var != nullptr) {
+    runtime_device = env_var;
+  }
   std::string out_dir = "/home/huzaifaunjhawala/drake/performance_jsons/";
   std::string run_type;
-  if (runtime_device == "cuda:*" || runtime_device.empty() ||
-      runtime_device == "cuda:gpu" || !sycl_used) {
-    if (sycl_used) {
-      run_type = "sycl-gpu";
-    } else {
-      run_type = "drake-cpu";
-    }
+  if (runtime_device.empty()) {
+    run_type = sycl_used ? "sycl-gpu" : "drake-cpu";
+  } else if (runtime_device == "cuda:*" || runtime_device == "cuda:gpu") {
+    run_type = sycl_used ? "sycl-gpu" : "drake-cpu";
   } else {
     run_type = "sycl-cpu";
   }
@@ -364,12 +367,14 @@ int DoMain() {
       "right_finger_bubble+spatula/"
       "contact_surface");
   meshcat->PublishRecording();
-  if (FLAGS_use_sycl) {
-    PrintPerformanceStats(plant, scene_graph, scene_graph_context,
-                          /*sycl_used=*/true, FLAGS_mesh_res);
-  } else {
-    PrintPerformanceStats(plant, scene_graph, scene_graph_context,
-                          /*sycl_used=*/false, FLAGS_mesh_res);
+  if (FLAGS_print_perf) {
+    if (FLAGS_use_sycl) {
+      PrintPerformanceStats(plant, scene_graph, scene_graph_context,
+                            /*sycl_used=*/true, FLAGS_mesh_res);
+    } else {
+      PrintPerformanceStats(plant, scene_graph, scene_graph_context,
+                            /*sycl_used=*/false, FLAGS_mesh_res);
+    }
   }
   return 0;
 }
