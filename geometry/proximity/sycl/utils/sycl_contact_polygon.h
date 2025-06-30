@@ -542,8 +542,6 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
   for (size_t triangle_index = check_local_item_id;
        triangle_index + 2 < polygon_size;
        triangle_index += NUM_THREADS_PER_CHECK) {
-    double cross_magnitude = 0.0;
-
     const double v0_x =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 0];
     const double v0_y =
@@ -567,8 +565,9 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
                     (triangle_index + 2) * 3 + 1];
 
-    cross_magnitude += sycl::pow(
-        (v1_x - v0_x) * (v2_y - v0_y) - (v1_y - v0_y) * (v2_x - v0_x), 2);
+    double cross_magnitude = (v1_x - v0_x) * (v2_y - v0_y);
+    cross_magnitude -= (v1_y - v0_y) * (v2_x - v0_x);
+    cross_magnitude *= cross_magnitude;
 
     const double v0_z =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 2];
@@ -579,10 +578,14 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
                     (triangle_index + 2) * 3 + 2];
 
-    cross_magnitude += sycl::pow(
-        (v1_y - v0_y) * (v2_z - v0_z) - (v1_z - v0_z) * (v2_y - v0_y), 2);
-    cross_magnitude += sycl::pow(
-        (v1_z - v0_z) * (v2_x - v0_x) - (v1_x - v0_x) * (v2_z - v0_z), 2);
+    double temp = (v1_y - v0_y) * (v2_z - v0_z);
+    temp -= (v1_z - v0_z) * (v2_y - v0_y);
+    cross_magnitude += temp * temp;
+
+    temp = (v1_z - v0_z) * (v2_x - v0_x);
+    temp -= (v1_x - v0_x) * (v2_z - v0_z);
+    cross_magnitude += temp * temp;
+
     cross_magnitude = sycl::sqrt(cross_magnitude);
     thread_area_sum += cross_magnitude;
 
