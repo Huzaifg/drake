@@ -542,12 +542,13 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
   for (size_t triangle_index = check_local_item_id;
        triangle_index + 2 < polygon_size;
        triangle_index += NUM_THREADS_PER_CHECK) {
+    double cross_magnitude = 0.0;
+
     const double v0_x =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 0];
     const double v0_y =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 1];
-    const double v0_z =
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 2];
+
     // Compute the thread local cross magnitude
 
     // First vertex of triangle edge (current polygon vertex)
@@ -557,10 +558,6 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     const double v1_y =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
                     (triangle_index + 1) * 3 + 1];
-    const double v1_z =
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
-                    (triangle_index + 1) * 3 + 2];
-
     // Second vertex of triangle edge (next polygon vertex, wrapping
     // around)
     const double v2_x =
@@ -569,30 +566,36 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     const double v2_y =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
                     (triangle_index + 2) * 3 + 1];
+
+    cross_magnitude += sycl::pow(
+        (v1_x - v0_x) * (v2_y - v0_y) - (v1_y - v0_y) * (v2_x - v0_x), 2);
+
+    const double v0_z =
+        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + 0 * 3 + 2];
+    const double v1_z =
+        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
+                    (triangle_index + 1) * 3 + 2];
     const double v2_z =
         slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET +
                     (triangle_index + 2) * 3 + 2];
 
-    const double r_UV_x = v1_x - v0_x;
-    const double r_UV_y = v1_y - v0_y;
-    const double r_UV_z = v1_z - v0_z;
-
-    const double r_UW_x = v2_x - v0_x;
-    const double r_UW_y = v2_y - v0_y;
-    const double r_UW_z = v2_z - v0_z;
-
-    const double cross_x = r_UV_y * r_UW_z - r_UV_z * r_UW_y;
-    const double cross_y = r_UV_z * r_UW_x - r_UV_x * r_UW_z;
-    const double cross_z = r_UV_x * r_UW_y - r_UV_y * r_UW_x;
-
-    const double cross_magnitude =
-        sycl::sqrt(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z);
+    cross_magnitude += sycl::pow(
+        (v1_y - v0_y) * (v2_z - v0_z) - (v1_z - v0_z) * (v2_y - v0_y), 2);
+    cross_magnitude += sycl::pow(
+        (v1_z - v0_z) * (v2_x - v0_x) - (v1_x - v0_x) * (v2_z - v0_z), 2);
+    cross_magnitude = sycl::sqrt(cross_magnitude);
     thread_area_sum += cross_magnitude;
 
     // Compute the thread local centroid
-    thread_centroid_x += cross_magnitude * (v1_x + v2_x + v0_x);
-    thread_centroid_y += cross_magnitude * (v1_y + v2_y + v0_y);
-    thread_centroid_z += cross_magnitude * (v1_z + v2_z + v0_z);
+    thread_centroid_x += cross_magnitude * v0_x;
+    thread_centroid_y += cross_magnitude * v0_y;
+    thread_centroid_z += cross_magnitude * v0_z;
+    thread_centroid_x += cross_magnitude * v1_x;
+    thread_centroid_y += cross_magnitude * v1_y;
+    thread_centroid_z += cross_magnitude * v1_z;
+    thread_centroid_x += cross_magnitude * v2_x;
+    thread_centroid_y += cross_magnitude * v2_y;
+    thread_centroid_z += cross_magnitude * v2_z;
   }
 
   // Now each thread writes its computed values
