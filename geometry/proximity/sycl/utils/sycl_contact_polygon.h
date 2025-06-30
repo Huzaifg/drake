@@ -17,6 +17,10 @@ namespace geometry {
 namespace internal {
 namespace sycl_impl {
 
+// Forward declaration for kernel name template
+template <DeviceType device_type>
+class ComputeContactPolygonsKernel;
+
 /* Computes contact polygons for narrow phase collision detection.
  *
  * This function performs the entire narrow phase collision detection pipeline:
@@ -1383,7 +1387,7 @@ sycl::event LaunchContactPolygonComputation(
     sycl::local_accessor<double, 1> slm_polygon(slm_polygon_size, h);
     sycl::local_accessor<int, 1> slm_ints(slm_ints_size, h);
     constexpr size_t SUB_GROUP_SIZE = NUM_THREADS_PER_CHECK;
-    h.parallel_for(
+    h.parallel_for<ComputeContactPolygonsKernel<device_type>>(
         sycl::nd_range<1>{NUM_GROUPS * LOCAL_SIZE, LOCAL_SIZE},
         [=,
          narrow_phase_check_indices = collision_data.narrow_phase_check_indices,

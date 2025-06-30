@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -36,6 +38,21 @@ namespace sycl_impl {
 #else
 #define DRAKE_SYCL_DEVICE_INLINE
 #endif
+
+// Forward declarations for kernel names
+class TransformVerticesKernel;
+class TransformInwardNormalsKernel;
+class TransformPressureGradientsKernel;
+class ComputeElementAABBKernel;
+class GenerateCollisionFilterKernel;
+class FillNarrowPhaseCheckIndicesKernel;
+class FillValidPolygonIndicesKernel;
+class CompactPolygonDataKernel;
+
+// Helper function to round up to nearest multiple of work group size
+inline size_t RoundUpToWorkGroupSize(size_t n, size_t work_group_size) {
+  return ((n + work_group_size - 1) / work_group_size) * work_group_size;
+}
 
 // Implementation class for SyclProximityEngine that contains all SYCL-specific
 // code
@@ -313,6 +330,10 @@ class SyclProximityEngine::Impl {
   std::vector<SYCLHydroelasticSurface> ComputeSYCLHydroelasticSurface(
       const std::unordered_map<GeometryId, math::RigidTransform<double>>&
           X_WGs) {
+    // // Performance analysis: Static counter for time steps
+    // static size_t time_step_counter = 0;
+    // ++time_step_counter;
+
     if (total_checks_ == 0) {
       return {};
     }
@@ -350,42 +371,65 @@ class SyclProximityEngine::Impl {
     // Combine all transformation kernels into a single command group
     auto transform_vertices_event = q_device_.submit([&](sycl::handler& h) {
       // Transform vertices
-      h.parallel_for(sycl::range<1>(total_vertices_), sycl::id<1>(0),
-                     [=, vertices_M = mesh_data_.vertices_M,
-                      vertices_W = mesh_data_.vertices_W,
-                      vertex_mesh_ids = mesh_data_.vertex_mesh_ids,
-                      transforms = mesh_data_.transforms](sycl::id<1> idx) {
-                       const size_t vertex_index = idx[0];
-                       const size_t mesh_index = vertex_mesh_ids[vertex_index];
+      const size_t work_group_size = 64;
+      const size_t global_vertices =
+          RoundUpToWorkGroupSize(total_vertices_, work_group_size);
+      h.parallel_for<TransformVerticesKernel>(
+          sycl::nd_range<1>(sycl::range<1>(global_vertices),
+                            sycl::range<1>(work_group_size)),
+          [=, vertices_M = mesh_data_.vertices_M,
+           vertices_W = mesh_data_.vertices_W,
+           vertex_mesh_ids = mesh_data_.vertex_mesh_ids,
+           transforms = mesh_data_.transforms,
+           total_vertices_ = total_vertices_]
+#ifdef __NVPTX__
+          [[sycl::reqd_work_group_size(64)]]
+#endif
+          (sycl::nd_item<1> item) {
+            const size_t vertex_index = item.get_global_id(0);
+            if (vertex_index >= total_vertices_) return;
 
-                       const double x = vertices_M[vertex_index][0];
-                       const double y = vertices_M[vertex_index][1];
-                       const double z = vertices_M[vertex_index][2];
-                       double T[12];
+            const size_t mesh_index = vertex_mesh_ids[vertex_index];
+
+            const double x = vertices_M[vertex_index][0];
+            const double y = vertices_M[vertex_index][1];
+            const double z = vertices_M[vertex_index][2];
+            double T[12];
 #pragma unroll
-                       for (size_t i = 0; i < 12; ++i) {
-                         T[i] = transforms[mesh_index * 12 + i];
-                       }
-                       double new_x = T[0] * x + T[1] * y + T[2] * z + T[3];
-                       double new_y = T[4] * x + T[5] * y + T[6] * z + T[7];
-                       double new_z = T[8] * x + T[9] * y + T[10] * z + T[11];
+            for (size_t i = 0; i < 12; ++i) {
+              T[i] = transforms[mesh_index * 12 + i];
+            }
+            double new_x = T[0] * x + T[1] * y + T[2] * z + T[3];
+            double new_y = T[4] * x + T[5] * y + T[6] * z + T[7];
+            double new_z = T[8] * x + T[9] * y + T[10] * z + T[11];
 
-                       vertices_W[vertex_index][0] = new_x;
-                       vertices_W[vertex_index][1] = new_y;
-                       vertices_W[vertex_index][2] = new_z;
-                     });
+            vertices_W[vertex_index][0] = new_x;
+            vertices_W[vertex_index][1] = new_y;
+            vertices_W[vertex_index][2] = new_z;
+          });
     });
 
     // Transform inward normals
     auto transform_elem_quantities_event1 =
         q_device_.submit([&](sycl::handler& h) {
-          h.parallel_for(
-              sycl::range<1>(total_elements_), sycl::id<1>(0),
+          const size_t work_group_size = 256;
+          const size_t global_elements =
+              RoundUpToWorkGroupSize(total_elements_, work_group_size);
+          h.parallel_for<TransformInwardNormalsKernel>(
+              sycl::nd_range<1>(sycl::range<1>(global_elements),
+                                sycl::range<1>(work_group_size)),
               [=, inward_normals_M = mesh_data_.inward_normals_M,
                inward_normals_W = mesh_data_.inward_normals_W,
                element_mesh_ids = mesh_data_.element_mesh_ids,
-               transforms = mesh_data_.transforms](sycl::id<1> idx) {
-                const size_t element_index = idx[0];
+               transforms = mesh_data_.transforms,
+               total_elements_ = total_elements_]
+#ifdef __NVPTX__
+              [[sycl::reqd_work_group_size(256)]]
+#endif
+              (sycl::nd_item<1> item) {
+                const size_t element_index = item.get_global_id(0);
+                if (element_index >= total_elements_) return;
+
                 const size_t mesh_index = element_mesh_ids[element_index];
 
                 double T[12];
@@ -414,14 +458,25 @@ class SyclProximityEngine::Impl {
     // Transform pressure gradients
     auto transform_elem_quantities_event2 =
         q_device_.submit([&](sycl::handler& h) {
-          h.parallel_for(
-              sycl::range<1>(total_elements_), sycl::id<1>(0),
+          const size_t work_group_size = 256;
+          const size_t global_elements =
+              RoundUpToWorkGroupSize(total_elements_, work_group_size);
+          h.parallel_for<TransformPressureGradientsKernel>(
+              sycl::nd_range<1>(sycl::range<1>(global_elements),
+                                sycl::range<1>(work_group_size)),
               [=,
                gradient_M_pressure_at_Mo = mesh_data_.gradient_M_pressure_at_Mo,
                gradient_W_pressure_at_Wo = mesh_data_.gradient_W_pressure_at_Wo,
                element_mesh_ids = mesh_data_.element_mesh_ids,
-               transforms = mesh_data_.transforms](sycl::id<1> idx) {
-                const size_t element_index = idx[0];
+               transforms = mesh_data_.transforms,
+               total_elements_ = total_elements_]
+#ifdef __NVPTX__
+              [[sycl::reqd_work_group_size(256)]]
+#endif
+              (sycl::nd_item<1> item) {
+                const size_t element_index = item.get_global_id(0);
+                if (element_index >= total_elements_) return;
+
                 const size_t mesh_index = element_mesh_ids[element_index];
 
                 double T[12];
@@ -466,15 +521,27 @@ class SyclProximityEngine::Impl {
       // Allocate device memory for element AABBs
       // While doing this, assign false to all elements that are not part of
       // geometries that are collision candidates
-      h.parallel_for(
-          sycl::range<1>(total_elements_),
+      const size_t work_group_size = 256;
+      const size_t global_elements =
+          RoundUpToWorkGroupSize(total_elements_, work_group_size);
+      h.parallel_for<ComputeElementAABBKernel>(
+          sycl::nd_range<1>(sycl::range<1>(global_elements),
+                            sycl::range<1>(work_group_size)),
           [=, elements = mesh_data_.elements,
            vertices_W = mesh_data_.vertices_W,
            element_mesh_ids = mesh_data_.element_mesh_ids,
            element_aabb_min_W = mesh_data_.element_aabb_min_W,
            element_aabb_max_W = mesh_data_.element_aabb_max_W,
-           vertex_offsets = mesh_data_.vertex_offsets](sycl::id<1> idx) {
-            const size_t element_index = idx[0];
+           vertex_offsets = mesh_data_.vertex_offsets,
+           total_elements_ = total_elements_]
+
+#ifdef __NVPTX__
+          [[sycl::reqd_work_group_size(256)]]
+#endif
+          (sycl::nd_item<1> item) {
+            const size_t element_index = item.get_global_id(0);
+            if (element_index >= total_elements_) return;
+
             const size_t geom_index = element_mesh_ids[element_index];
             // Get the four vertex indices for this tetrahedron
             const std::array<int, 4>& tet_vertices = elements[element_index];
@@ -518,8 +585,12 @@ class SyclProximityEngine::Impl {
     auto generate_collision_filterevent =
         q_device_.submit([&](sycl::handler& h) {
           h.depends_on({element_aabb_event, collision_filtermemset_event});
-          h.parallel_for(
-              sycl::range<1>(total_checks_),
+          const size_t work_group_size = 1024;
+          const size_t global_checks =
+              RoundUpToWorkGroupSize(total_checks_, work_group_size);
+          h.parallel_for<GenerateCollisionFilterKernel>(
+              sycl::nd_range<1>(sycl::range<1>(global_checks),
+                                sycl::range<1>(work_group_size)),
               [=, collision_filter = collision_data_.collision_filter,
                collision_filter_host_body_index =
                    collision_data_.collision_filter_host_body_index,
@@ -531,14 +602,23 @@ class SyclProximityEngine::Impl {
                element_aabb_min_W = mesh_data_.element_aabb_min_W,
                element_aabb_max_W = mesh_data_.element_aabb_max_W,
                min_pressures = mesh_data_.min_pressures,
-               max_pressures = mesh_data_.max_pressures](sycl::id<1> idx) {
-                const size_t check_index = idx[0];
+               max_pressures = mesh_data_.max_pressures,
+               total_checks_ = total_checks_]
+
+#ifdef __NVPTX__
+              [[sycl::reqd_work_group_size(1024)]]
+#endif
+              (sycl::nd_item<1> item) {
+                const size_t check_index = item.get_global_id(0);
+                if (check_index >= total_checks_) return;
+
                 const size_t host_body_index =
                     collision_filter_host_body_index[check_index];
                 // What elements is this check_index checking?
-                // host_body_index is the geometry index that element A belongs
-                // to
-                size_t num_of_checks_offset = geom_collision_filter_check_offsets[host_body_index];
+                // host_body_index is the geometry index that element A
+                // belongs to
+                size_t num_of_checks_offset =
+                    geom_collision_filter_check_offsets[host_body_index];
                 const size_t geom_local_check_number =
                     check_index - num_of_checks_offset;
 
@@ -655,23 +735,65 @@ class SyclProximityEngine::Impl {
     auto fill_narrow_phase_check_indicesevent =
         q_device_.submit([&](sycl::handler& h) {
           h.depends_on(generate_collision_filterevent);
-          h.parallel_for(sycl::range<1>(total_checks_),
-                         [=,
-                          narrow_phase_check_indices =
-                              collision_data_.narrow_phase_check_indices,
-                          prefix_sum_total_checks =
-                              collision_data_.prefix_sum_total_checks,
-                          collision_filter = collision_data_.collision_filter](
-                             sycl::id<1> idx) {
-                           const size_t check_index = idx[0];
-                           if (collision_filter[check_index] == 1) {
-                             size_t narrow_check_num =
-                                 prefix_sum_total_checks[check_index];
-                             narrow_phase_check_indices[narrow_check_num] =
-                                 check_index;
-                           }
-                         });
+          h.parallel_for<FillNarrowPhaseCheckIndicesKernel>(
+              sycl::range<1>(total_checks_),
+              [=,
+               narrow_phase_check_indices =
+                   collision_data_.narrow_phase_check_indices,
+               prefix_sum_total_checks =
+                   collision_data_.prefix_sum_total_checks,
+               collision_filter =
+                   collision_data_.collision_filter](sycl::id<1> idx) {
+                const size_t check_index = idx[0];
+                if (collision_filter[check_index] == 1) {
+                  size_t narrow_check_num =
+                      prefix_sum_total_checks[check_index];
+                  narrow_phase_check_indices[narrow_check_num] = check_index;
+                }
+              });
         });
+
+    // // Performance analysis: Write narrow_phase_check_indices to file at
+    // // specific time steps
+    // fill_narrow_phase_check_indicesevent.wait_and_throw();
+    // const std::vector<size_t> target_steps = {10, 150, 275, 1000};
+    // if (std::find(target_steps.begin(), target_steps.end(),
+    //               time_step_counter) != target_steps.end()) {
+    //   // Create a host buffer to copy the data from device
+    //   std::vector<size_t> host_narrow_phase_check_indices(
+    //       total_narrow_phase_checks_);
+    //   q_device_
+    //       .memcpy(host_narrow_phase_check_indices.data(),
+    //               collision_data_.narrow_phase_check_indices,
+    //               total_narrow_phase_checks_ * sizeof(size_t))
+    //       .wait();
+
+    //   // Write to file
+    //   std::string filename =
+    //       "/home/huzaifaunjhawala/drake/perf_analysis/"
+    //       "dense_narrow_phase_check_indices_step_" +
+    //       std::to_string(time_step_counter) + ".txt";
+    //   std::ofstream file(filename);
+    //   if (file.is_open()) {
+    //     file << "# Time step: " << time_step_counter << "\n";
+    //     file << "# Total narrow phase checks: " <<
+    //     total_narrow_phase_checks_
+    //          << "\n";
+    //     for (size_t i = 0; i < total_narrow_phase_checks_; ++i) {
+    //       file << host_narrow_phase_check_indices[i] << "\n";
+    //     }
+    //     file.close();
+    //     std::cout
+    //         << "Performance analysis: Written narrow_phase_check_indices to
+    //         "
+    //         << filename << " (step " << time_step_counter << ", "
+    //         << total_narrow_phase_checks_ << " entries)" << std::endl;
+    //   } else {
+    //     std::cerr << "Performance analysis: Failed to open file " <<
+    //     filename
+    //               << std::endl;
+    //   }
+    // }
 
     // =========================================
     // Command group 4: Narrow phase collision detection
@@ -765,7 +887,7 @@ class SyclProximityEngine::Impl {
     auto fill_valid_polygon_indicesevent =
         q_device_.submit([&](sycl::handler& h) {
           h.depends_on(compute_contact_polygon_event);
-          h.parallel_for(
+          h.parallel_for<FillValidPolygonIndicesKernel>(
               sycl::range<1>(total_narrow_phase_checks_),
               [=, valid_polygon_indices = polygon_data_.valid_polygon_indices,
                prefix_sum_narrow_phase_checks =
@@ -786,7 +908,7 @@ class SyclProximityEngine::Impl {
     // Compact all the data to data only with valid polygons
     auto compact_event = q_device_.submit([&](sycl::handler& h) {
       h.depends_on({fill_valid_polygon_indicesevent});
-      h.parallel_for(
+      h.parallel_for<CompactPolygonDataKernel>(
           sycl::range<1>(total_polygons_),
           [=, compacted_polygon_areas = polygon_data_.compacted_polygon_areas,
            compacted_polygon_centroids =
@@ -847,7 +969,7 @@ class SyclProximityEngine::Impl {
         polygon_data_.compacted_polygon_g_N,
         polygon_data_.compacted_polygon_geom_index_A,
         polygon_data_.compacted_polygon_geom_index_B, total_polygons_)};
-  }
+  }  // namespace sycl_impl
 
  private:
   // Helper method to initialize SYCL queue
@@ -882,10 +1004,10 @@ class SyclProximityEngine::Impl {
   }
 
   friend class SyclProximityEngineTester;
-  // We have a CPU queue for operations beneficial to perform on the host and a
-  // device queue for operations beneficial to perform on the Accelerator.
-  // Note: q_device_ HAS TO BE declared before mem_mgr_ since it needs to be
-  // initialized first.
+  // We have a CPU queue for operations beneficial to perform on the host
+  // and a device queue for operations beneficial to perform on the
+  // Accelerator. Note: q_device_ HAS TO BE declared before mem_mgr_ since
+  // it needs to be initialized first.
   sycl::queue q_device_;
 
   SyclMemoryManager mem_mgr_;
@@ -930,11 +1052,11 @@ class SyclProximityEngine::Impl {
           // (updated in ComputeSYCLHydroelasticSurface)
 
   size_t total_polygons_ = 0;  // Total number of valid polygons found by SYCL
-  size_t estimated_polygons_ = 0;  // Estimated number of polygons (set to be 1%
-                                   // of the narrow phase checks)
+  size_t estimated_polygons_ = 0;  // Estimated number of polygons (set to
+                                   // be 1% of the narrow phase checks)
 
   friend class SyclProximityEngineAttorney;
-};
+};  // namespace sycl_impl
 
 bool SyclProximityEngine::is_available() {
   return Impl::is_available();
