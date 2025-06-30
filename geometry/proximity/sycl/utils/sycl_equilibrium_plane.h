@@ -48,24 +48,24 @@ SYCL_EXTERNAL inline bool ComputeEquilibriumPlane(
   const double n_W_x = gradP_A_Wo_x - gradP_B_Wo_x;
   const double n_W_y = gradP_A_Wo_y - gradP_B_Wo_y;
   const double n_W_z = gradP_A_Wo_z - gradP_B_Wo_z;
-  const double n_W_norm =
-      sycl::sqrt(n_W_x * n_W_x + n_W_y * n_W_y + n_W_z * n_W_z);
+  double n_W_norm = n_W_x * n_W_x + n_W_y * n_W_y + n_W_z * n_W_z;
 
   if (n_W_norm <= 0.0) {
     return false;
   }
-
-  const double n_W_x_normalized = n_W_x / n_W_norm;
-  const double n_W_y_normalized = n_W_y / n_W_norm;
-  const double n_W_z_normalized = n_W_z / n_W_norm;
+  const double n_W_inv_norm = sycl::rsqrt(n_W_norm);
+  const double n_W_x_normalized = n_W_x * n_W_inv_norm;
+  const double n_W_y_normalized = n_W_y * n_W_inv_norm;
+  const double n_W_z_normalized = n_W_z * n_W_inv_norm;
 
   // Normalized pressure gradient for A
-  const double gradP_A_W_norm =
-      sycl::sqrt(gradP_A_Wo_x * gradP_A_Wo_x + gradP_A_Wo_y * gradP_A_Wo_y +
-                 gradP_A_Wo_z * gradP_A_Wo_z);
-  const double gradP_A_W_normalized_x = gradP_A_Wo_x / gradP_A_W_norm;
-  const double gradP_A_W_normalized_y = gradP_A_Wo_y / gradP_A_W_norm;
-  const double gradP_A_W_normalized_z = gradP_A_Wo_z / gradP_A_W_norm;
+  const double gradP_A_W_norm = gradP_A_Wo_x * gradP_A_Wo_x +
+                                gradP_A_Wo_y * gradP_A_Wo_y +
+                                gradP_A_Wo_z * gradP_A_Wo_z;
+  const double gradP_A_W_inv_norm = sycl::rsqrt(gradP_A_W_norm);
+  const double gradP_A_W_normalized_x = gradP_A_Wo_x * gradP_A_W_inv_norm;
+  const double gradP_A_W_normalized_y = gradP_A_Wo_y * gradP_A_W_inv_norm;
+  const double gradP_A_W_normalized_z = gradP_A_Wo_z * gradP_A_W_inv_norm;
   const double cos_theta_A = n_W_x_normalized * gradP_A_W_normalized_x +
                              n_W_y_normalized * gradP_A_W_normalized_y +
                              n_W_z_normalized * gradP_A_W_normalized_z;
@@ -78,12 +78,13 @@ SYCL_EXTERNAL inline bool ComputeEquilibriumPlane(
   }
 
   // Normalized pressure gradient for B
-  const double gradP_B_W_norm =
-      sycl::sqrt(gradP_B_Wo_x * gradP_B_Wo_x + gradP_B_Wo_y * gradP_B_Wo_y +
-                 gradP_B_Wo_z * gradP_B_Wo_z);
-  const double gradP_B_W_normalized_x = gradP_B_Wo_x / gradP_B_W_norm;
-  const double gradP_B_W_normalized_y = gradP_B_Wo_y / gradP_B_W_norm;
-  const double gradP_B_W_normalized_z = gradP_B_Wo_z / gradP_B_W_norm;
+  const double gradP_B_W_norm = gradP_B_Wo_x * gradP_B_Wo_x +
+                                gradP_B_Wo_y * gradP_B_Wo_y +
+                                gradP_B_Wo_z * gradP_B_Wo_z;
+  const double gradP_B_W_inv_norm = sycl::rsqrt(gradP_B_W_norm);
+  const double gradP_B_W_normalized_x = gradP_B_Wo_x * gradP_B_W_inv_norm;
+  const double gradP_B_W_normalized_y = gradP_B_Wo_y * gradP_B_W_inv_norm;
+  const double gradP_B_W_normalized_z = gradP_B_Wo_z * gradP_B_W_inv_norm;
   const double cos_theta_B = -n_W_x_normalized * gradP_B_W_normalized_x +
                              -n_W_y_normalized * gradP_B_W_normalized_y +
                              -n_W_z_normalized * gradP_B_W_normalized_z;
@@ -104,9 +105,9 @@ SYCL_EXTERNAL inline bool ComputeEquilibriumPlane(
         gradP_B_Wo_z * n_W_z_normalized);
 
   // Plane point
-  double p_WQ_x = ((p_B_Wo - p_A_Wo) / n_W_norm) * n_W_x_normalized;
-  double p_WQ_y = ((p_B_Wo - p_A_Wo) / n_W_norm) * n_W_y_normalized;
-  double p_WQ_z = ((p_B_Wo - p_A_Wo) / n_W_norm) * n_W_z_normalized;
+  double p_WQ_x = ((p_B_Wo - p_A_Wo) * n_W_inv_norm) * n_W_x_normalized;
+  double p_WQ_y = ((p_B_Wo - p_A_Wo) * n_W_inv_norm) * n_W_y_normalized;
+  double p_WQ_z = ((p_B_Wo - p_A_Wo) * n_W_inv_norm) * n_W_z_normalized;
   eq_plane_out[0] = n_W_x_normalized;
   eq_plane_out[1] = n_W_y_normalized;
   eq_plane_out[2] = n_W_z_normalized;
