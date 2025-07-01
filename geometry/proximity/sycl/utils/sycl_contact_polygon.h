@@ -66,7 +66,6 @@ class ComputeContactPolygonsKernel;
  * @param EQ_PLANE_OFFSET Offset for equilibrium plane data
  * @param VERTEX_A_OFFSET Offset for vertex A data
  * @param VERTEX_B_OFFSET Offset for vertex B data
- * @param INWARD_NORMAL_OFFSET Offset for inward normal data
  * @param RANDOM_SCRATCH_OFFSET Offset for scratch space
  * @param POLYGON_VERTICES Number of polygon vertices
  */
@@ -77,9 +76,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     const size_t TOTAL_THREADS_NEEDED, const size_t NUM_THREADS_PER_CHECK,
     const size_t DOUBLES_PER_CHECK, const size_t POLYGON_DOUBLES,
     const size_t EQ_PLANE_OFFSET, const size_t VERTEX_A_OFFSET,
-    const size_t VERTEX_B_OFFSET, const size_t INWARD_NORMAL_OFFSET,
-    const size_t RANDOM_SCRATCH_OFFSET, const size_t POLYGON_VERTICES,
-    const size_t* narrow_phase_check_indices,
+    const size_t VERTEX_B_OFFSET, const size_t RANDOM_SCRATCH_OFFSET,
+    const size_t POLYGON_VERTICES, const size_t* narrow_phase_check_indices,
     const Vector4<double>* gradient_W_pressure_at_Wo,
     const size_t* element_offsets, const size_t* vertex_offsets,
     const size_t* element_mesh_ids, const std::array<int, 4>* elements,
@@ -275,22 +273,6 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
       valid_thread = false;
     }
   }
-  // Move inward normals
-  // Loop is over x,y,z
-  if (valid_thread) {
-#pragma unroll
-    for (size_t i = 0; i < 3; i++) {
-      // Quantities that we have "4" of
-      for (size_t llid = check_local_item_id; llid < 4;
-           llid += NUM_THREADS_PER_CHECK) {
-        // Inward normals of element B
-        slm[slm_offset + INWARD_NORMAL_OFFSET + llid * 3 + i] =
-            inward_normals_W[B_element_index][llid][i];
-      }
-    }
-  }
-  item.barrier(sycl::access::fence_space::local_space);
-
   // Compute the intersection of Polygon Q with the faces of element
   // B We will sequentially loop over the faces but we will use our
   // work items to parallely compute the intersection point over
@@ -320,8 +302,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
 // This loop is over x,y,z
 #pragma unroll
       for (size_t i = 0; i < 3; i++) {
-        outward_normal[i] =
-            -slm[slm_offset + INWARD_NORMAL_OFFSET + face * 3 + i];
+        outward_normal[i] = -inward_normals_W[B_element_index][face][i];
 
         // Get a point from the verticies of element B
         point_on_face[i] =
@@ -701,9 +682,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
     const size_t TOTAL_THREADS_NEEDED, const size_t NUM_THREADS_PER_CHECK,
     const size_t DOUBLES_PER_CHECK, const size_t POLYGON_DOUBLES,
     const size_t EQ_PLANE_OFFSET, const size_t VERTEX_A_OFFSET,
-    const size_t VERTEX_B_OFFSET, const size_t INWARD_NORMAL_OFFSET,
-    const size_t RANDOM_SCRATCH_OFFSET, const size_t POLYGON_VERTICES,
-    const size_t* narrow_phase_check_indices,
+    const size_t VERTEX_B_OFFSET, const size_t RANDOM_SCRATCH_OFFSET,
+    const size_t POLYGON_VERTICES, const size_t* narrow_phase_check_indices,
     const Vector4<double>* gradient_W_pressure_at_Wo,
     const size_t* element_offsets, const size_t* vertex_offsets,
     const size_t* element_mesh_ids, const std::array<int, 4>* elements,
@@ -876,19 +856,6 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
     return;
   }
 
-// Move inward normals
-// Loop is over x,y,z
-#pragma unroll
-  for (size_t i = 0; i < 3; i++) {
-    // Quantities that we have "4" of
-    for (size_t llid = check_local_item_id; llid < 4;
-         llid += NUM_THREADS_PER_CHECK) {
-      // Inward normals of element B
-      slm[slm_offset + INWARD_NORMAL_OFFSET + llid * 3 + i] =
-          inward_normals_W[B_element_index][llid][i];
-    }
-  }
-  sycl::group_barrier(sub_group);
   // Compute the intersection of Polygon Q with the faces of element B
   // We will sequentially loop over the faces but we will use our work
   // items to parallely compute the intersection point over each edge
@@ -915,8 +882,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
 // This loop is over x,y,z
 #pragma unroll
       for (size_t i = 0; i < 3; i++) {
-        outward_normal[i] =
-            -slm[slm_offset + INWARD_NORMAL_OFFSET + face * 3 + i];
+        outward_normal[i] = -inward_normals_W[B_element_index][face][i];
 
         // Get a point from the verticies of element B
         point_on_face[i] =
@@ -1330,21 +1296,15 @@ sycl::event LaunchContactPolygonComputation(
   constexpr size_t VERTEX_B_OFFSET = VERTEX_A_OFFSET + VERTEX_A_DOUBLES;
   constexpr size_t VERTEX_B_DOUBLES = 12;
 
-  // Only need inward normals of element B
-  constexpr size_t INWARD_NORMAL_OFFSET = VERTEX_B_OFFSET + VERTEX_B_DOUBLES;
-  constexpr size_t INWARD_NORMAL_DOUBLES = 12;
-
   // Used varylingly through the kernel to express more parallelism
-  constexpr size_t RANDOM_SCRATCH_OFFSET =
-      INWARD_NORMAL_OFFSET + INWARD_NORMAL_DOUBLES;
+  constexpr size_t RANDOM_SCRATCH_OFFSET = VERTEX_B_OFFSET + VERTEX_B_DOUBLES;
   constexpr size_t RANDOM_SCRATCH_DOUBLES = 8;  // 8 heights at max
 
   // Calculate total doubles for verification
   constexpr size_t VERTEX_DOUBLES = VERTEX_A_DOUBLES + VERTEX_B_DOUBLES;
 
-  constexpr size_t DOUBLES_PER_CHECK = EQ_PLANE_DOUBLES + VERTEX_DOUBLES +
-                                       INWARD_NORMAL_DOUBLES +
-                                       RANDOM_SCRATCH_DOUBLES;
+  constexpr size_t DOUBLES_PER_CHECK =
+      EQ_PLANE_DOUBLES + VERTEX_DOUBLES + RANDOM_SCRATCH_DOUBLES;
 
   constexpr size_t POLYGON_CURRENT_DOUBLES =
       48;  // 16 vertices (although 8 is max, we need 16 because each edge can
@@ -1425,7 +1385,6 @@ sycl::event LaunchContactPolygonComputation(
          DOUBLES_PER_CHECK = DOUBLES_PER_CHECK,
          POLYGON_DOUBLES = POLYGON_DOUBLES, EQ_PLANE_OFFSET = EQ_PLANE_OFFSET,
          VERTEX_A_OFFSET = VERTEX_A_OFFSET, VERTEX_B_OFFSET = VERTEX_B_OFFSET,
-         INWARD_NORMAL_OFFSET = INWARD_NORMAL_OFFSET,
          RANDOM_SCRATCH_OFFSET = RANDOM_SCRATCH_OFFSET,
          POLYGON_VERTICES = POLYGON_VERTICES]
 #ifndef __NVPTX__
@@ -1439,7 +1398,7 @@ sycl::event LaunchContactPolygonComputation(
               item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
               NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
               EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
-              INWARD_NORMAL_OFFSET, RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
+              RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
               narrow_phase_check_indices, gradient_W_pressure_at_Wo,
               element_offsets, vertex_offsets, element_mesh_ids, elements,
               vertices_W, inward_normals_W, geom_collision_filter_num_cols,
@@ -1452,7 +1411,7 @@ sycl::event LaunchContactPolygonComputation(
           //     item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
           //     NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
           //     EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
-          //     INWARD_NORMAL_OFFSET, RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
+          //      RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
           //     narrow_phase_check_indices, gradient_W_pressure_at_Wo,
           //     element_offsets, vertex_offsets, element_mesh_ids, elements,
           //     vertices_W, inward_normals_W, geom_collision_filter_num_cols,
