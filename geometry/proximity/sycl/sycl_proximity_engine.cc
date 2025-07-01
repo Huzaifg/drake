@@ -24,6 +24,7 @@
 #include "drake/geometry/proximity/sycl/utils/sycl_equilibrium_plane.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_hydroelastic_surface_creator.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_naive_broad_phase.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_tetrahedron_slicing.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_timing_logger.h"
 #include "drake/math/rigid_transform.h"
@@ -48,11 +49,6 @@ class GenerateCollisionFilterKernel;
 class FillNarrowPhaseCheckIndicesKernel;
 class FillValidPolygonIndicesKernel;
 class CompactPolygonDataKernel;
-
-// Helper function to round up to nearest multiple of work group size
-inline size_t RoundUpToWorkGroupSize(size_t n, size_t work_group_size) {
-  return ((n + work_group_size - 1) / work_group_size) * work_group_size;
-}
 
 // Implementation class for SyclProximityEngine that contains all SYCL-specific
 // code
@@ -513,150 +509,11 @@ class SyclProximityEngine::Impl {
         });
 
     // =========================================
-    // Command group 2: Generate candidate tet pairs
+    // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
     // =========================================
-    auto element_aabb_event = q_device_.submit([&](sycl::handler& h) {
-      h.depends_on(transform_vertices_event);
-      // Lets first compute all AABBs irrespective if they are needed or not
-      // Allocate device memory for element AABBs
-      // While doing this, assign false to all elements that are not part of
-      // geometries that are collision candidates
-      const size_t work_group_size = 256;
-      const size_t global_elements =
-          RoundUpToWorkGroupSize(total_elements_, work_group_size);
-      h.parallel_for<ComputeElementAABBKernel>(
-          sycl::nd_range<1>(sycl::range<1>(global_elements),
-                            sycl::range<1>(work_group_size)),
-          [=, elements = mesh_data_.elements,
-           vertices_W = mesh_data_.vertices_W,
-           element_mesh_ids = mesh_data_.element_mesh_ids,
-           element_aabb_min_W = mesh_data_.element_aabb_min_W,
-           element_aabb_max_W = mesh_data_.element_aabb_max_W,
-           vertex_offsets = mesh_data_.vertex_offsets,
-           total_elements_ = total_elements_]
-
-#ifdef __NVPTX__
-          [[sycl::reqd_work_group_size(256)]]
-#endif
-          (sycl::nd_item<1> item) {
-            const size_t element_index = item.get_global_id(0);
-            if (element_index >= total_elements_) return;
-
-            const size_t geom_index = element_mesh_ids[element_index];
-            // Get the four vertex indices for this tetrahedron
-            const std::array<int, 4>& tet_vertices = elements[element_index];
-            const size_t vertex_mesh_offset = vertex_offsets[geom_index];
-            // Initialize min/max to first vertex
-            double min_x = vertices_W[vertex_mesh_offset + tet_vertices[0]][0];
-            double min_y = vertices_W[vertex_mesh_offset + tet_vertices[0]][1];
-            double min_z = vertices_W[vertex_mesh_offset + tet_vertices[0]][2];
-
-            double max_x = min_x;
-            double max_y = min_y;
-            double max_z = min_z;
-
-            // Find min/max across all four vertices
-            for (int i = 1; i < 4; ++i) {
-              const size_t vertex_idx = vertex_mesh_offset + tet_vertices[i];
-
-              // Update min coordinates
-              min_x = sycl::min(min_x, vertices_W[vertex_idx][0]);
-              min_y = sycl::min(min_y, vertices_W[vertex_idx][1]);
-              min_z = sycl::min(min_z, vertices_W[vertex_idx][2]);
-
-              // Update max coordinates
-              max_x = sycl::max(max_x, vertices_W[vertex_idx][0]);
-              max_y = sycl::max(max_y, vertices_W[vertex_idx][1]);
-              max_z = sycl::max(max_z, vertices_W[vertex_idx][2]);
-            }
-
-            // Store the results
-            element_aabb_min_W[element_index][0] = min_x;
-            element_aabb_min_W[element_index][1] = min_y;
-            element_aabb_min_W[element_index][2] = min_z;
-
-            element_aabb_max_W[element_index][0] = max_x;
-            element_aabb_max_W[element_index][1] = max_y;
-            element_aabb_max_W[element_index][2] = max_z;
-          });
-    });
-
-    // Now generate collision filter with the AABBs that we computed
-    auto generate_collision_filterevent =
-        q_device_.submit([&](sycl::handler& h) {
-          h.depends_on({element_aabb_event, collision_filtermemset_event});
-          const size_t work_group_size = 1024;
-          const size_t global_checks =
-              RoundUpToWorkGroupSize(total_checks_, work_group_size);
-          h.parallel_for<GenerateCollisionFilterKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_checks),
-                                sycl::range<1>(work_group_size)),
-              [=, collision_filter = collision_data_.collision_filter,
-               collision_filter_host_body_index =
-                   collision_data_.collision_filter_host_body_index,
-               geom_collision_filter_check_offsets =
-                   collision_data_.geom_collision_filter_check_offsets,
-               geom_collision_filter_num_cols =
-                   collision_data_.geom_collision_filter_num_cols,
-               element_offsets = mesh_data_.element_offsets,
-               element_aabb_min_W = mesh_data_.element_aabb_min_W,
-               element_aabb_max_W = mesh_data_.element_aabb_max_W,
-               min_pressures = mesh_data_.min_pressures,
-               max_pressures = mesh_data_.max_pressures,
-               total_checks_ = total_checks_]
-
-#ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(1024)]]
-#endif
-              (sycl::nd_item<1> item) {
-                const size_t check_index = item.get_global_id(0);
-                if (check_index >= total_checks_) return;
-
-                const size_t host_body_index =
-                    collision_filter_host_body_index[check_index];
-                // What elements is this check_index checking?
-                // host_body_index is the geometry index that element A
-                // belongs to
-                size_t num_of_checks_offset =
-                    geom_collision_filter_check_offsets[host_body_index];
-                const size_t geom_local_check_number =
-                    check_index - num_of_checks_offset;
-
-                const size_t A_element_index =
-                    element_offsets[host_body_index] +
-                    geom_local_check_number /
-                        geom_collision_filter_num_cols[host_body_index];
-                const size_t B_element_index =
-                    element_offsets[host_body_index + 1] +
-                    geom_local_check_number %
-                        geom_collision_filter_num_cols[host_body_index];
-
-                // Default to not colliding.
-                // collision_filter[check_index] = 0;
-
-                // First check if the pressure fields of the elements intersect
-                if (max_pressures[B_element_index] <
-                        min_pressures[A_element_index] ||
-                    max_pressures[A_element_index] <
-                        min_pressures[B_element_index]) {
-                  return;
-                }
-
-                // We have two element index, now just check their AABB
-                // A element AABB
-                // min
-                for (int i = 0; i < 3; ++i) {
-                  if (element_aabb_max_W[B_element_index][i] <
-                      element_aabb_min_W[A_element_index][i])
-                    return;
-                  if (element_aabb_max_W[A_element_index][i] <
-                      element_aabb_min_W[B_element_index][i])
-                    return;
-                }
-
-                collision_filter[check_index] = 1;
-              });
-        });
+    auto [element_aabb_event, generate_collision_filterevent] = NaiveBroadPhase(
+        q_device_, mesh_data_, collision_data_, total_elements_, total_checks_,
+        transform_vertices_event, collision_filtermemset_event);
     generate_collision_filterevent.wait();
 
     // =========================================
@@ -752,52 +609,6 @@ class SyclProximityEngine::Impl {
                 }
               });
         });
-
-    // // Performance analysis: Write narrow_phase_check_indices to file at
-    // // specific time steps
-    // fill_narrow_phase_check_indicesevent.wait_and_throw();
-    // const std::vector<size_t> target_steps = {10, 150, 275, 1000};
-    // if (std::find(target_steps.begin(), target_steps.end(),
-    //               time_step_counter) != target_steps.end()) {
-    //   // Create a host buffer to copy the data from device
-    //   std::vector<size_t> host_narrow_phase_check_indices(
-    //       total_narrow_phase_checks_);
-    //   q_device_
-    //       .memcpy(host_narrow_phase_check_indices.data(),
-    //               collision_data_.narrow_phase_check_indices,
-    //               total_narrow_phase_checks_ * sizeof(size_t))
-    //       .wait();
-
-    //   // Write to file
-    //   std::string filename =
-    //       "/home/huzaifaunjhawala/drake/perf_analysis/"
-    //       "dense_narrow_phase_check_indices_step_" +
-    //       std::to_string(time_step_counter) + ".txt";
-    //   std::ofstream file(filename);
-    //   if (file.is_open()) {
-    //     file << "# Time step: " << time_step_counter << "\n";
-    //     file << "# Total narrow phase checks: " <<
-    //     total_narrow_phase_checks_
-    //          << "\n";
-    //     for (size_t i = 0; i < total_narrow_phase_checks_; ++i) {
-    //       file << host_narrow_phase_check_indices[i] << "\n";
-    //     }
-    //     file.close();
-    //     std::cout
-    //         << "Performance analysis: Written narrow_phase_check_indices to
-    //         "
-    //         << filename << " (step " << time_step_counter << ", "
-    //         << total_narrow_phase_checks_ << " entries)" << std::endl;
-    //   } else {
-    //     std::cerr << "Performance analysis: Failed to open file " <<
-    //     filename
-    //               << std::endl;
-    //   }
-    // }
-
-    // =========================================
-    // Command group 4: Narrow phase collision detection
-    // =========================================
 
     // Create dependency vector
     std::vector<sycl::event> dependencies = {
