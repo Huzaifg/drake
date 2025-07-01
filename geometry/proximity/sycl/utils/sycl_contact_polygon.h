@@ -574,7 +574,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
   }
 
   // Now each thread writes its computed values
-  if (check_local_item_id < polygon_size) {
+  if (check_local_item_id + 2 < polygon_size) {
     slm_polygon[slm_polygon_offset + AREAS_OFFSET + check_local_item_id] =
         thread_area_sum;
     slm[slm_offset + CENTROID_OFFSET + check_local_item_id * 3 + 0] =
@@ -589,7 +589,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
 
   for (size_t stride = NUM_THREADS_PER_CHECK / 2; stride > 0; stride >>= 1) {
     if (check_local_item_id < stride &&
-        check_local_item_id + stride < polygon_size) {
+        check_local_item_id + stride + 2 < polygon_size) {
       slm_polygon[slm_polygon_offset + AREAS_OFFSET + check_local_item_id] +=
           slm_polygon[slm_polygon_offset + AREAS_OFFSET +
                       (check_local_item_id + stride)];
