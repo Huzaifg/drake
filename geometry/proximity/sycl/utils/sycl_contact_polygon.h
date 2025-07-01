@@ -235,15 +235,14 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
         slm[slm_offset + VERTEX_B_OFFSET + llid * 3 + i] =
             vertices_W[vertex_mesh_offset_B + tet_vertices_B[llid]][i];
       }
-      // Quantity that we have "16" of - For now set all the verticies
-      // of the polygon to double max so that we know all are stale
-      for (size_t llid = check_local_item_id; llid < POLYGON_VERTICES;
-           llid += NUM_THREADS_PER_CHECK) {
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + llid * 3 +
-                    i] = std::numeric_limits<double>::max();
-        slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3 +
-                    i] = std::numeric_limits<double>::max();
-      }
+    }
+    // Quantity that we have "16" of - Only set 0'th element
+    for (size_t llid = check_local_item_id; llid < POLYGON_VERTICES;
+         llid += NUM_THREADS_PER_CHECK) {
+      slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + llid * 3] =
+          std::numeric_limits<double>::max();
+      slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3] =
+          std::numeric_limits<double>::max();
     }
   }
   sycl::group_barrier(item.get_group());
@@ -463,11 +462,7 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
       // invalid At the same time even fill in the clipped polygon
       // with max values
       for (size_t i = write_index; i < POLYGON_VERTICES; ++i) {
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + i * 3 + 0] =
-            std::numeric_limits<double>::max();
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + i * 3 + 1] =
-            std::numeric_limits<double>::max();
-        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + i * 3 + 2] =
+        slm_polygon[slm_polygon_offset + POLYGON_CURRENT_OFFSET + i * 3] =
             std::numeric_limits<double>::max();
       }
 
@@ -480,12 +475,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     if (valid_thread) {
       for (size_t llid = check_local_item_id; llid < POLYGON_VERTICES;
            llid += NUM_THREADS_PER_CHECK) {
-        slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3 +
-                    0] = std::numeric_limits<double>::max();
-        slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3 +
-                    1] = std::numeric_limits<double>::max();
-        slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3 +
-                    2] = std::numeric_limits<double>::max();
+        slm_polygon[slm_polygon_offset + POLYGON_CLIPPED_OFFSET + llid * 3] =
+            std::numeric_limits<double>::max();
       }
     }
     sycl::group_barrier(item.get_group());

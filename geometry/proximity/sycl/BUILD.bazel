@@ -32,7 +32,7 @@ drake_cc_library(
         "--cuda-gpu-arch=sm_89",
         #"-Xsycl-target-backend=nvptx64-nvidia-cuda",
         #"-lineinfo",
-        "-gline-tables-only",
+        #"-gline-tables-only",
         #"-Xsycl-target-backend=nvptx64-nvidia-cuda -lineinfo",
         "-DEIGEN_DONT_VECTORIZE",
         "-I/opt/intel/oneapi/dpl/2022.8/include",
