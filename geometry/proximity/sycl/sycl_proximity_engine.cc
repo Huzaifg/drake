@@ -592,16 +592,25 @@ class SyclProximityEngine::Impl {
     auto fill_narrow_phase_check_indicesevent =
         q_device_.submit([&](sycl::handler& h) {
           h.depends_on(generate_collision_filterevent);
+          const size_t work_group_size = 1024;
+          const size_t global_checks =
+              RoundUpToWorkGroupSize(total_checks_, work_group_size);
           h.parallel_for<FillNarrowPhaseCheckIndicesKernel>(
-              sycl::range<1>(total_checks_),
+              sycl::nd_range<1>(sycl::range<1>(global_checks),
+                                sycl::range<1>(work_group_size)),
               [=,
                narrow_phase_check_indices =
                    collision_data_.narrow_phase_check_indices,
                prefix_sum_total_checks =
                    collision_data_.prefix_sum_total_checks,
-               collision_filter =
-                   collision_data_.collision_filter](sycl::id<1> idx) {
-                const size_t check_index = idx[0];
+               collision_filter = collision_data_.collision_filter,
+               total_checks_ = total_checks_]
+#ifdef __NVPTX__
+              [[sycl::reqd_work_group_size(1024)]]
+#endif
+              (sycl::nd_item<1> item) {
+                const size_t check_index = item.get_global_id(0);
+                if (check_index >= total_checks_) return;
                 if (collision_filter[check_index] == 1) {
                   size_t narrow_check_num =
                       prefix_sum_total_checks[check_index];
