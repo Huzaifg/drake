@@ -90,7 +90,7 @@ class SyclProximityEngineAttorney {
 
   static std::vector<uint8_t> get_collision_filter(
       SyclProximityEngine::Impl* impl);
-  static std::vector<size_t> get_prefix_sum(SyclProximityEngine::Impl* impl);
+  static std::vector<uint32_t> get_prefix_sum(SyclProximityEngine::Impl* impl);
   static std::vector<Vector3<double>> get_vertices_M(
       SyclProximityEngine::Impl* impl);
   static std::vector<Vector3<double>> get_vertices_W(
@@ -102,14 +102,15 @@ class SyclProximityEngineAttorney {
       SyclProximityEngine::Impl* impl);
   static Vector4<double>* get_gradient_W_pressure_at_Wo(
       SyclProximityEngine::Impl* impl);
-  static size_t* get_collision_filter_host_body_index(
+  static uint32_t* get_collision_filter_host_body_index(
       SyclProximityEngine::Impl* impl);
-  static size_t get_total_checks(SyclProximityEngine::Impl* impl);
-  static size_t get_total_narrow_phase_checks(SyclProximityEngine::Impl* impl);
-  static size_t get_total_polygons(SyclProximityEngine::Impl* impl);
-  static std::vector<size_t> get_narrow_phase_check_indices(
+  static uint32_t get_total_checks(SyclProximityEngine::Impl* impl);
+  static uint32_t get_total_narrow_phase_checks(
       SyclProximityEngine::Impl* impl);
-  static std::vector<size_t> get_valid_polygon_indices(
+  static uint32_t get_total_polygons(SyclProximityEngine::Impl* impl);
+  static std::vector<uint32_t> get_narrow_phase_check_indices(
+      SyclProximityEngine::Impl* impl);
+  static std::vector<uint32_t> get_valid_polygon_indices(
       SyclProximityEngine::Impl* impl);
   static std::vector<double> get_polygon_areas(SyclProximityEngine::Impl* impl);
   static std::vector<Vector3<double>> get_polygon_centroids(

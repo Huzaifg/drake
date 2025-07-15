@@ -131,7 +131,7 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
   EXPECT_EQ(vertices_M_host.size(), vertices_of_both_meshes.size());
 
   // Compare vertices within machine precision
-  for (size_t i = 0; i < vertices_M_host.size(); ++i) {
+  for (uint32_t i = 0; i < vertices_M_host.size(); ++i) {
     EXPECT_NEAR(vertices_M_host[i][0], vertices_of_both_meshes[i][0],
                 std::numeric_limits<double>::epsilon());
     EXPECT_NEAR(vertices_M_host[i][1], vertices_of_both_meshes[i][1],
@@ -151,7 +151,7 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
                                  elements_from_meshB.begin(),
                                  elements_from_meshB.end());
   EXPECT_EQ(elements_host.size(), elements_of_both_meshes.size());
-  for (size_t i = 0; i < elements_host.size(); ++i) {
+  for (uint32_t i = 0; i < elements_host.size(); ++i) {
     EXPECT_EQ(elements_host[i], elements_of_both_meshes[i]);
   }
 
@@ -161,7 +161,7 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
       SyclProximityEngineAttorney::get_collision_filter(impl);
 
   std::vector<uint8_t> expected_collision_filter{0, 0, 1, 0};
-  for (size_t i = 0; i < 4; ++i) {
+  for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(collision_filter[i], expected_collision_filter[i]);
   }
 
@@ -173,13 +173,13 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
   // Element 0 of A collides with element 0 of B
   // Element 1 of A collides with element 0 and 1 of B
   expected_collision_filter = {1, 0, 1, 1};
-  for (size_t i = 0; i < 4; ++i) {
+  for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(collision_filter[i], expected_collision_filter[i]);
   }
 
-  std::vector<size_t> prefix_sum =
+  std::vector<uint32_t> prefix_sum =
       SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<size_t> expected_prefix_sum = {0, 1, 1, 2};
+  std::vector<uint32_t> expected_prefix_sum = {0, 1, 1, 2};
   EXPECT_EQ(prefix_sum, expected_prefix_sum);
 }
 
@@ -217,17 +217,17 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
 
   std::vector<uint8_t> expected_collision_filter{0, 0, 0, 0, 1, 0,
                                                  0, 0, 0, 0, 1, 0};
-  for (size_t i = 0; i < 12; ++i) {
+  for (uint32_t i = 0; i < 12; ++i) {
     EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
   }
 
   // check compacted narrow_phase_check_indices_
-  std::vector<size_t> narrow_phase_check_indices =
+  std::vector<uint32_t> narrow_phase_check_indices =
       SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
-  std::vector<size_t> expected_narrow_phase_check_indices{4, 10};
+  std::vector<uint32_t> expected_narrow_phase_check_indices{4, 10};
   ASSERT_EQ(narrow_phase_check_indices.size(),
             expected_narrow_phase_check_indices.size());
-  for (size_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
+  for (uint32_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
     EXPECT_EQ(narrow_phase_check_indices[i],
               expected_narrow_phase_check_indices[i]);
   }
@@ -240,13 +240,13 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
 
   // With meshes closer, more elements should be colliding
   expected_collision_filter = {1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1};
-  for (size_t i = 0; i < 12; ++i) {
+  for (uint32_t i = 0; i < 12; ++i) {
     EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
   }
 
-  std::vector<size_t> prefix_sum =
+  std::vector<uint32_t> prefix_sum =
       SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<size_t> expected_prefix_sum(expected_collision_filter.size());
+  std::vector<uint32_t> expected_prefix_sum(expected_collision_filter.size());
   std::exclusive_scan(expected_collision_filter.begin(),
                       expected_collision_filter.end(),
                       expected_prefix_sum.begin(), 0);
@@ -258,7 +258,7 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
   expected_narrow_phase_check_indices = {0, 2, 4, 5, 6, 7, 8, 10, 11};
   ASSERT_EQ(narrow_phase_check_indices.size(),
             expected_narrow_phase_check_indices.size());
-  for (size_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
+  for (uint32_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
     EXPECT_EQ(narrow_phase_check_indices[i],
               expected_narrow_phase_check_indices[i]);
   }
@@ -287,7 +287,7 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
   // Get the total checks
   auto impl = SyclProximityEngineAttorney::get_impl(engine);
   // Geom A checks 2 elements against 6 = 12 checks
-  // Geom B checks 2 elements against 4 = 8 checks  
+  // Geom B checks 2 elements against 4 = 8 checks
   // Geom C checks 2 elements against 2 = 4 checks
   // Geom D checks none
   // Total = 24 checks
@@ -299,14 +299,13 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
 
   // Expected pattern: only adjacent meshes should be colliding
   std::vector<uint8_t> expected_collision_filter{
-      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,   // A checks
-      0, 0, 0, 0, 1, 0, 0, 0,   // B checks  
-      0, 0, 1, 0};   // C checks
+      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,  // A checks
+      0, 0, 0, 0, 1, 0, 0, 0,              // B checks
+      0, 0, 1, 0};                         // C checks
 
-  for (size_t i = 0; i < 24; ++i) {
+  for (uint32_t i = 0; i < 24; ++i) {
     EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
   }
-
 }
 
 GTEST_TEST(SPETest, TwoSpheresColliding) {
@@ -482,27 +481,27 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
     return;
   }
 
-  std::vector<size_t> prefix_sum =
+  std::vector<uint32_t> prefix_sum =
       SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<size_t> expected_prefix_sum(expected_filter.size());
+  std::vector<uint32_t> expected_prefix_sum(expected_filter.size());
   std::exclusive_scan(expected_filter.begin(), expected_filter.end(),
                       expected_prefix_sum.begin(), 0);
   EXPECT_EQ(prefix_sum, expected_prefix_sum);
 
   // Get the narrow phase check indices
-  const std::vector<size_t> narrow_phase_check_indices =
+  const std::vector<uint32_t> narrow_phase_check_indices =
       SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
-  const size_t total_polygons =
+  const uint32_t total_polygons =
       SyclProximityEngineAttorney::get_total_polygons(impl);
-  const std::vector<size_t> valid_polygon_indices =
+  const std::vector<uint32_t> valid_polygon_indices =
       SyclProximityEngineAttorney::get_valid_polygon_indices(impl);
 
   // Construct the element id pairs correspinding to each narrow_phase check
   // These id pairs will map to the global index that was used in the
   // collision_filter_ (row and column)
   std::vector<std::pair<int, int>> element_id_pairs;
-  for (size_t i = 0; i < total_polygons; ++i) {
-    size_t global_check_index =
+  for (uint32_t i = 0; i < total_polygons; ++i) {
+    uint32_t global_check_index =
         narrow_phase_check_indices[valid_polygon_indices[i]];
     int eA = global_check_index / soft_geometryB.mesh().num_elements();
     int eB = global_check_index - eA * soft_geometryB.mesh().num_elements();
@@ -939,9 +938,9 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
     expected_filter[i] = 0;
   }
 
-  std::vector<size_t> prefix_sum =
+  std::vector<uint32_t> prefix_sum =
       SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<size_t> expected_prefix_sum(expected_filter.size());
+  std::vector<uint32_t> expected_prefix_sum(expected_filter.size());
   std::exclusive_scan(expected_filter.begin(), expected_filter.end(),
                       expected_prefix_sum.begin(), 0);
   EXPECT_EQ(prefix_sum, expected_prefix_sum);
@@ -953,16 +952,16 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
       SyclProximityEngineAttorney::get_polygon_centroids(impl);
 
   // Get the narrow phase check indices
-  const std::vector<size_t> narrow_phase_check_indices =
+  const std::vector<uint32_t> narrow_phase_check_indices =
       SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
 
   // Construct the element id pairs correspinding to each narrow_phase check
   // These id pairs will map to the global index that was used in the
   // collision_filter_ (row and column)
   std::vector<std::pair<int, int>> element_id_pairs;
-  for (size_t i = 0; i < polygon_areas.size(); ++i) {
-    size_t global_check_index = narrow_phase_check_indices[i];
-    if (global_check_index > static_cast<size_t>(AB_size + AC_size)) {
+  for (uint32_t i = 0; i < polygon_areas.size(); ++i) {
+    uint32_t global_check_index = narrow_phase_check_indices[i];
+    if (global_check_index > static_cast<uint32_t>(AB_size + AC_size)) {
       int eB = (global_check_index - (AB_size + AC_size)) / num_C;
       int eC = (global_check_index - (AB_size + AC_size)) - eB * num_C;
       element_id_pairs.emplace_back(eB, eC);

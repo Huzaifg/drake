@@ -23,13 +23,13 @@ class SyclMemoryManager {
 
   // Allocate device memory for basic types
   template <typename T>
-  inline T* AllocateDevice(size_t count) {
+  inline T* AllocateDevice(uint32_t count) {
     return sycl::malloc_device<T>(count, queue_);
   }
 
   // Allocate host-accessible memory for basic types
   template <typename T>
-  inline T* AllocateHost(size_t count) {
+  inline T* AllocateHost(uint32_t count) {
     return sycl::malloc_host<T>(count, queue_);
   }
 
@@ -44,26 +44,26 @@ class SyclMemoryManager {
   // Copy data from host to device
   template <typename T>
   inline sycl::event CopyToDevice(T* device_ptr, const T* host_ptr,
-                                  size_t count) {
+                                  uint32_t count) {
     return queue_.memcpy(device_ptr, host_ptr, count * sizeof(T));
   }
 
   // Copy data from device to host
   template <typename T>
   inline sycl::event CopyToHost(T* host_ptr, const T* device_ptr,
-                                size_t count) {
+                                uint32_t count) {
     return queue_.memcpy(host_ptr, device_ptr, count * sizeof(T));
   }
 
   // Fill device memory with a value
   template <typename T>
-  inline sycl::event Fill(T* device_ptr, const T& value, size_t count) {
+  inline sycl::event Fill(T* device_ptr, const T& value, uint32_t count) {
     return queue_.fill(device_ptr, value, count);
   }
 
   // Memset device memory to zero
   template <typename T>
-  inline sycl::event Memset(T* device_ptr, size_t count) {
+  inline sycl::event Memset(T* device_ptr, uint32_t count) {
     return queue_.memset(device_ptr, 0, count * sizeof(T));
   }
 
@@ -75,7 +75,7 @@ class SyclMemoryManager {
 struct DeviceMeshData {
   // Element data
   std::array<int, 4>* elements = nullptr;
-  size_t* element_mesh_ids = nullptr;
+  uint32_t* element_mesh_ids = nullptr;
   std::array<Vector3<double>, 4>* inward_normals_M = nullptr;
   std::array<Vector3<double>, 4>* inward_normals_W = nullptr;
   double* min_pressures = nullptr;
@@ -89,13 +89,13 @@ struct DeviceMeshData {
   Vector3<double>* vertices_M = nullptr;
   Vector3<double>* vertices_W = nullptr;
   double* pressures = nullptr;
-  size_t* vertex_mesh_ids = nullptr;
+  uint32_t* vertex_mesh_ids = nullptr;
 
   // Lookup arrays (host accessible)
-  size_t* element_offsets = nullptr;
-  size_t* vertex_offsets = nullptr;
-  size_t* element_counts = nullptr;
-  size_t* vertex_counts = nullptr;
+  uint32_t* element_offsets = nullptr;
+  uint32_t* vertex_offsets = nullptr;
+  uint32_t* element_counts = nullptr;
+  uint32_t* vertex_counts = nullptr;
   GeometryId* geometry_ids = nullptr;
   double* transforms = nullptr;
 };
@@ -104,16 +104,16 @@ struct DeviceMeshData {
 struct DeviceCollisionData {
   // Broad phase data
   uint8_t* collision_filter = nullptr;
-  size_t* collision_filter_host_body_index = nullptr;
-  size_t* total_checks_per_geometry = nullptr;
-  size_t* geom_collision_filter_num_cols = nullptr;
-  size_t* geom_collision_filter_check_offsets = nullptr;
-  size_t* prefix_sum_total_checks = nullptr;
+  uint32_t* collision_filter_host_body_index = nullptr;
+  uint32_t* total_checks_per_geometry = nullptr;
+  uint32_t* geom_collision_filter_num_cols = nullptr;
+  uint32_t* geom_collision_filter_check_offsets = nullptr;
+  uint32_t* prefix_sum_total_checks = nullptr;
 
   // Narrow phase data
-  size_t* narrow_phase_check_indices = nullptr;
+  uint32_t* narrow_phase_check_indices = nullptr;
   uint8_t* narrow_phase_check_validity = nullptr;
-  size_t* prefix_sum_narrow_phase_checks = nullptr;
+  uint32_t* prefix_sum_narrow_phase_checks = nullptr;
 };
 
 // Structure to hold polygon data memory
@@ -138,7 +138,7 @@ struct DevicePolygonData {
   GeometryId* compacted_polygon_geom_index_A = nullptr;
   GeometryId* compacted_polygon_geom_index_B = nullptr;
 
-  size_t* valid_polygon_indices = nullptr;
+  uint32_t* valid_polygon_indices = nullptr;
 
   // Debug data
   double* debug_polygon_vertices = nullptr;
@@ -150,23 +150,24 @@ class SyclMemoryHelper {
   // Allocate all mesh-related device memory
   static inline void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
                                         DeviceMeshData& mesh_data,
-                                        size_t num_geometries) {
+                                        uint32_t num_geometries) {
     // Allocate lookup arrays (host accessible)
-    mesh_data.element_offsets = mem_mgr.AllocateHost<size_t>(num_geometries);
-    mesh_data.vertex_offsets = mem_mgr.AllocateHost<size_t>(num_geometries);
-    mesh_data.element_counts = mem_mgr.AllocateHost<size_t>(num_geometries);
-    mesh_data.vertex_counts = mem_mgr.AllocateHost<size_t>(num_geometries);
+    mesh_data.element_offsets = mem_mgr.AllocateHost<uint32_t>(num_geometries);
+    mesh_data.vertex_offsets = mem_mgr.AllocateHost<uint32_t>(num_geometries);
+    mesh_data.element_counts = mem_mgr.AllocateHost<uint32_t>(num_geometries);
+    mesh_data.vertex_counts = mem_mgr.AllocateHost<uint32_t>(num_geometries);
     mesh_data.geometry_ids = mem_mgr.AllocateHost<GeometryId>(num_geometries);
     mesh_data.transforms = mem_mgr.AllocateHost<double>(num_geometries * 12);
   }
 
   static inline void AllocateMeshElementVerticesMemory(
       SyclMemoryManager& mem_mgr, DeviceMeshData& mesh_data,
-      size_t total_elements, size_t total_vertices) {
+      uint32_t total_elements, uint32_t total_vertices) {
     // Allocate element data
     mesh_data.elements =
         mem_mgr.AllocateDevice<std::array<int, 4>>(total_elements);
-    mesh_data.element_mesh_ids = mem_mgr.AllocateDevice<size_t>(total_elements);
+    mesh_data.element_mesh_ids =
+        mem_mgr.AllocateDevice<uint32_t>(total_elements);
     mesh_data.inward_normals_M =
         mem_mgr.AllocateDevice<std::array<Vector3<double>, 4>>(total_elements);
     mesh_data.inward_normals_W =
@@ -188,58 +189,59 @@ class SyclMemoryHelper {
     mesh_data.vertices_W =
         mem_mgr.AllocateDevice<Vector3<double>>(total_vertices);
     mesh_data.pressures = mem_mgr.AllocateDevice<double>(total_vertices);
-    mesh_data.vertex_mesh_ids = mem_mgr.AllocateDevice<size_t>(total_vertices);
+    mesh_data.vertex_mesh_ids =
+        mem_mgr.AllocateDevice<uint32_t>(total_vertices);
   }
 
   // Allocate collision detection memory of arrays based on number of geometries
   static inline void AllocateGeometryCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      size_t num_geometries) {
+      uint32_t num_geometries) {
     collision_data.total_checks_per_geometry =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
+        mem_mgr.AllocateHost<uint32_t>(num_geometries);
     // geom_collision_filternum_cols[i] is the number of elements that need to
     // be checked with each of the elements of the ith geometry
     // Will be highest for 1st geometry and lowest for the last geometry (due to
     // symmetric nature of collision_filter - we are only consider upper
     // triangle)
     collision_data.geom_collision_filter_num_cols =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
+        mem_mgr.AllocateHost<uint32_t>(num_geometries);
     // Stores the exclusive scan of total checks per geometry
     collision_data.geom_collision_filter_check_offsets =
-        mem_mgr.AllocateHost<size_t>(num_geometries);
+        mem_mgr.AllocateHost<uint32_t>(num_geometries);
   }
 
   // Allocate collision detection memory of arrays based on total checks
   static inline void AllocateTotalChecksCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      size_t total_checks) {
+      uint32_t total_checks) {
     // Broad phase data
     collision_data.collision_filter =
         mem_mgr.AllocateDevice<uint8_t>(total_checks);
     collision_data.collision_filter_host_body_index =
-        mem_mgr.AllocateHost<size_t>(total_checks);
+        mem_mgr.AllocateHost<uint32_t>(total_checks);
     collision_data.prefix_sum_total_checks =
-        mem_mgr.AllocateDevice<size_t>(total_checks);
+        mem_mgr.AllocateDevice<uint32_t>(total_checks);
   }
 
   // Allocate collision detection memory of arrays based on estimated narrow
   // phase checks
   static inline void AllocateNarrowPhaseChecksCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      size_t estimated_narrow_phase_checks) {
+      uint32_t estimated_narrow_phase_checks) {
     // Narrow phase data
     collision_data.narrow_phase_check_indices =
-        mem_mgr.AllocateDevice<size_t>(estimated_narrow_phase_checks);
+        mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
     collision_data.narrow_phase_check_validity =
         mem_mgr.AllocateDevice<uint8_t>(estimated_narrow_phase_checks);
     collision_data.prefix_sum_narrow_phase_checks =
-        mem_mgr.AllocateDevice<size_t>(estimated_narrow_phase_checks);
+        mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
   }
 
   // Allocate polygon memory
   static inline void AllocateFullPolygonMemory(
       SyclMemoryManager& mem_mgr, DevicePolygonData& polygon_data,
-      size_t estimated_narrow_phase_checks) {
+      uint32_t estimated_narrow_phase_checks) {
     // Raw polygon data
     polygon_data.polygon_areas =
         mem_mgr.AllocateDevice<double>(estimated_narrow_phase_checks);
@@ -261,7 +263,7 @@ class SyclMemoryHelper {
 
   static inline void AllocateCompactPolygonMemory(
       SyclMemoryManager& mem_mgr, DevicePolygonData& polygon_data,
-      size_t estimated_polygons) {
+      uint32_t estimated_polygons) {
     // Compacted polygon data
     polygon_data.compacted_polygon_areas =
         mem_mgr.AllocateDevice<double>(estimated_polygons);
@@ -281,7 +283,7 @@ class SyclMemoryHelper {
         mem_mgr.AllocateDevice<GeometryId>(estimated_polygons);
 
     polygon_data.valid_polygon_indices =
-        mem_mgr.AllocateDevice<size_t>(estimated_polygons);
+        mem_mgr.AllocateDevice<uint32_t>(estimated_polygons);
   }
 
   // Free all mesh memory
