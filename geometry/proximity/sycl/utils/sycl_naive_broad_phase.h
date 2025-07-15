@@ -16,8 +16,8 @@ class ComputeElementAABBKernel;
 class GenerateCollisionFilterKernel;
 
 // Helper function to round up to nearest multiple of work group size
-SYCL_EXTERNAL inline size_t RoundUpToWorkGroupSize(size_t n,
-                                                   size_t work_group_size) {
+SYCL_EXTERNAL inline uint32_t RoundUpToWorkGroupSize(uint32_t n,
+                                                     uint32_t work_group_size) {
   return ((n + work_group_size - 1) / work_group_size) * work_group_size;
 }
 
@@ -48,8 +48,8 @@ SYCL_EXTERNAL inline size_t RoundUpToWorkGroupSize(size_t n,
  */
 inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
     sycl::queue& q_device, const DeviceMeshData& mesh_data,
-    const DeviceCollisionData& collision_data, size_t total_elements,
-    size_t total_checks, sycl::event transform_vertices_event,
+    const DeviceCollisionData& collision_data, uint32_t total_elements,
+    uint32_t total_checks, sycl::event transform_vertices_event,
     sycl::event collision_filter_memset_event) {
   // =========================================
   // Command group 1: Compute element AABBs
@@ -61,8 +61,8 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
     // Allocate device memory for element AABBs
     // While doing this, assign false to all elements that are not part of
     // geometries that are collision candidates
-    const size_t work_group_size = 256;
-    const size_t global_elements =
+    const uint32_t work_group_size = 256;
+    const uint32_t global_elements =
         RoundUpToWorkGroupSize(total_elements, work_group_size);
 
     h.parallel_for<ComputeElementAABBKernel>(
@@ -79,13 +79,13 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
         [[sycl::reqd_work_group_size(256)]]
 #endif
         (sycl::nd_item<1> item) {
-          const size_t element_index = item.get_global_id(0);
+          const uint32_t element_index = item.get_global_id(0);
           if (element_index >= total_elements_) return;
 
-          const size_t geom_index = element_mesh_ids[element_index];
+          const uint32_t geom_index = element_mesh_ids[element_index];
           // Get the four vertex indices for this tetrahedron
           const std::array<int, 4>& tet_vertices = elements[element_index];
-          const size_t vertex_mesh_offset = vertex_offsets[geom_index];
+          const uint32_t vertex_mesh_offset = vertex_offsets[geom_index];
 
           // Initialize min/max to first vertex
           double min_x = vertices_W[vertex_mesh_offset + tet_vertices[0]][0];
@@ -98,7 +98,7 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
 
           // Find min/max across all four vertices
           for (int i = 1; i < 4; ++i) {
-            const size_t vertex_idx = vertex_mesh_offset + tet_vertices[i];
+            const uint32_t vertex_idx = vertex_mesh_offset + tet_vertices[i];
 
             // Update min coordinates
             min_x = sycl::min(min_x, vertices_W[vertex_idx][0]);
@@ -128,8 +128,8 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
   auto generate_collision_filter_event = q_device.submit([&](sycl::handler& h) {
     h.depends_on({element_aabb_event, collision_filter_memset_event});
 
-    const size_t work_group_size = 1024;
-    const size_t global_checks =
+    const uint32_t work_group_size = 1024;
+    const uint32_t global_checks =
         RoundUpToWorkGroupSize(total_checks, work_group_size);
 
     h.parallel_for<GenerateCollisionFilterKernel>(
@@ -152,24 +152,24 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
         [[sycl::reqd_work_group_size(1024)]]
 #endif
         (sycl::nd_item<1> item) {
-          const size_t check_index = item.get_global_id(0);
+          const uint32_t check_index = item.get_global_id(0);
           if (check_index >= total_checks_) return;
 
-          const size_t host_body_index =
+          const uint32_t host_body_index =
               collision_filter_host_body_index[check_index];
 
           // What elements is this check_index checking?
           // host_body_index is the geometry index that element A belongs to
-          size_t num_of_checks_offset =
+          uint32_t num_of_checks_offset =
               geom_collision_filter_check_offsets[host_body_index];
-          const size_t geom_local_check_number =
+          const uint32_t geom_local_check_number =
               check_index - num_of_checks_offset;
 
-          const size_t A_element_index =
+          const uint32_t A_element_index =
               element_offsets[host_body_index] +
               geom_local_check_number /
                   geom_collision_filter_num_cols[host_body_index];
-          const size_t B_element_index =
+          const uint32_t B_element_index =
               element_offsets[host_body_index + 1] +
               geom_local_check_number %
                   geom_collision_filter_num_cols[host_body_index];
