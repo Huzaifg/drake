@@ -29,6 +29,7 @@
 #include "drake/geometry/proximity/sycl/utils/sycl_timing_logger.h"
 #include "drake/math/rigid_transform.h"
 
+namespace sycl_ext = sycl::ext::oneapi::experimental;
 namespace drake {
 namespace geometry {
 namespace internal {
@@ -56,12 +57,20 @@ class SyclProximityEngine::Impl {
  public:
   // Default constructor
   Impl()
-      : q_device_(InitializeQueue()), mem_mgr_(q_device_), timing_logger_() {}
+      : q_device_(InitializeQueue()),
+        mem_mgr_(q_device_),
+        GraphBroadPhase_(q_device_),
+        GraphNarrowPhase_(q_device_),
+        timing_logger_() {}
 
   // Constructor that initializes with soft geometries
   Impl(const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>&
            soft_geometries)
-      : q_device_(InitializeQueue()), mem_mgr_(q_device_), timing_logger_() {
+      : q_device_(InitializeQueue()),
+        mem_mgr_(q_device_),
+        GraphBroadPhase_(q_device_),
+        GraphNarrowPhase_(q_device_),
+        timing_logger_() {
     DRAKE_THROW_UNLESS(soft_geometries.size() > 0);
 
     // #ifdef DRAKE_SYCL_TIMING_ENABLED
@@ -267,7 +276,11 @@ class SyclProximityEngine::Impl {
   }
 
   // Copy constructor
-  Impl(const Impl& other) : q_device_(other.q_device_), mem_mgr_(q_device_) {
+  Impl(const Impl& other)
+      : q_device_(other.q_device_),
+        mem_mgr_(q_device_),
+        GraphBroadPhase_(q_device_),
+        GraphNarrowPhase_(q_device_) {
     // TODO(huzaifa): Implement deep copy of SYCL resources
     // For now, we'll just create a shallow copy which isn't ideal
     collision_candidates_ = other.collision_candidates_;
@@ -280,6 +293,8 @@ class SyclProximityEngine::Impl {
       // TODO(huzaifa): Implement deep copy of SYCL resources
       // For now, we'll just create a shallow copy which isn't ideal
       q_device_ = other.q_device_;
+      GraphBroadPhase_ = other.GraphBroadPhase_;
+      GraphNarrowPhase_ = other.GraphNarrowPhase_;
       collision_candidates_ = other.collision_candidates_;
       num_geometries_ = other.num_geometries_;
     }
@@ -336,10 +351,8 @@ class SyclProximityEngine::Impl {
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.StartKernel("unpack_transforms");
 #endif
-    auto collision_filtermemset_event = q_device_.memset(
-        collision_data_.collision_filter, 0, total_checks_ * sizeof(uint8_t));
 
-    // Get transfomers in host
+    // Update transforms data (this happens outside the graph)
     for (size_t geom_index = 0; geom_index < num_geometries_; ++geom_index) {
       GeometryId geometry_id = mesh_data_.geometry_ids[geom_index];
       // To maintain our orders of geometries we need to loop through the stored
@@ -356,165 +369,185 @@ class SyclProximityEngine::Impl {
         mesh_data_.transforms[geom_index * 12 + i] = transform(row, col);
       }
     }
+
+    // Build executable graph only once
+    if (!ExecGraph_BroadPhase.has_value()) {
+      GraphBroadPhase_.begin_recording(q_device_);
+      auto collision_filtermemset_event = q_device_.memset(
+          collision_data_.collision_filter, 0, total_checks_ * sizeof(uint8_t));
 #ifdef DRAKE_SYCL_TIMING_ENABLED
-    timing_logger_.EndKernel("unpack_transforms");
-    timing_logger_.StartKernel("transform_and_broad_phase");
+      timing_logger_.EndKernel("unpack_transforms");
+      timing_logger_.StartKernel("transform_and_broad_phase");
 #endif
-    // ========================================
-    // Command group 1: Transform quantities to world frame
-    // ========================================
+      // ========================================
+      // Command group 1: Transform quantities to world frame
+      // ========================================
 
-    // Combine all transformation kernels into a single command group
-    auto transform_vertices_event = q_device_.submit([&](sycl::handler& h) {
-      // Transform vertices
-      const size_t work_group_size = 64;
-      const size_t global_vertices =
-          RoundUpToWorkGroupSize(total_vertices_, work_group_size);
-      h.parallel_for<TransformVerticesKernel>(
-          sycl::nd_range<1>(sycl::range<1>(global_vertices),
-                            sycl::range<1>(work_group_size)),
-          [=, vertices_M = mesh_data_.vertices_M,
-           vertices_W = mesh_data_.vertices_W,
-           vertex_mesh_ids = mesh_data_.vertex_mesh_ids,
-           transforms = mesh_data_.transforms,
-           total_vertices_ = total_vertices_]
+      // Combine all transformation kernels into a single command group
+      auto transform_vertices_event = q_device_.submit([&](sycl::handler& h) {
+        // Transform vertices
+        const size_t work_group_size = 64;
+        const size_t global_vertices =
+            RoundUpToWorkGroupSize(total_vertices_, work_group_size);
+        h.parallel_for<TransformVerticesKernel>(
+            sycl::nd_range<1>(sycl::range<1>(global_vertices),
+                              sycl::range<1>(work_group_size)),
+            [=, vertices_M = mesh_data_.vertices_M,
+             vertices_W = mesh_data_.vertices_W,
+             vertex_mesh_ids = mesh_data_.vertex_mesh_ids,
+             transforms = mesh_data_.transforms,
+             total_vertices_ = total_vertices_]
 #ifdef __NVPTX__
-          [[sycl::reqd_work_group_size(64)]]
+            [[sycl::reqd_work_group_size(64)]]
 #endif
-          (sycl::nd_item<1> item) {
-            const size_t vertex_index = item.get_global_id(0);
-            if (vertex_index >= total_vertices_) return;
+            (sycl::nd_item<1> item) {
+              const size_t vertex_index = item.get_global_id(0);
+              if (vertex_index >= total_vertices_) return;
 
-            const size_t mesh_index = vertex_mesh_ids[vertex_index];
+              const size_t mesh_index = vertex_mesh_ids[vertex_index];
 
-            const double x = vertices_M[vertex_index][0];
-            const double y = vertices_M[vertex_index][1];
-            const double z = vertices_M[vertex_index][2];
-            double T[12];
+              const double x = vertices_M[vertex_index][0];
+              const double y = vertices_M[vertex_index][1];
+              const double z = vertices_M[vertex_index][2];
+              double T[12];
 #pragma unroll
-            for (size_t i = 0; i < 12; ++i) {
-              T[i] = transforms[mesh_index * 12 + i];
-            }
-            double new_x = T[0] * x + T[1] * y + T[2] * z + T[3];
-            double new_y = T[4] * x + T[5] * y + T[6] * z + T[7];
-            double new_z = T[8] * x + T[9] * y + T[10] * z + T[11];
+              for (size_t i = 0; i < 12; ++i) {
+                T[i] = transforms[mesh_index * 12 + i];
+              }
+              double new_x = T[0] * x + T[1] * y + T[2] * z + T[3];
+              double new_y = T[4] * x + T[5] * y + T[6] * z + T[7];
+              double new_z = T[8] * x + T[9] * y + T[10] * z + T[11];
 
-            vertices_W[vertex_index][0] = new_x;
-            vertices_W[vertex_index][1] = new_y;
-            vertices_W[vertex_index][2] = new_z;
+              vertices_W[vertex_index][0] = new_x;
+              vertices_W[vertex_index][1] = new_y;
+              vertices_W[vertex_index][2] = new_z;
+            });
+      });
+
+      // Transform inward normals
+      auto transform_elem_quantities_event1 =
+          q_device_.submit([&](sycl::handler& h) {
+            const size_t work_group_size = 256;
+            const size_t global_elements =
+                RoundUpToWorkGroupSize(total_elements_, work_group_size);
+            h.parallel_for<TransformInwardNormalsKernel>(
+                sycl::nd_range<1>(sycl::range<1>(global_elements),
+                                  sycl::range<1>(work_group_size)),
+                [=, inward_normals_M = mesh_data_.inward_normals_M,
+                 inward_normals_W = mesh_data_.inward_normals_W,
+                 element_mesh_ids = mesh_data_.element_mesh_ids,
+                 transforms = mesh_data_.transforms,
+                 total_elements_ = total_elements_]
+#ifdef __NVPTX__
+                [[sycl::reqd_work_group_size(256)]]
+#endif
+                (sycl::nd_item<1> item) {
+                  const size_t element_index = item.get_global_id(0);
+                  if (element_index >= total_elements_) return;
+
+                  const size_t mesh_index = element_mesh_ids[element_index];
+
+                  double T[12];
+#pragma unroll
+                  for (size_t i = 0; i < 12; ++i) {
+                    T[i] = transforms[mesh_index * 12 + i];
+                  }
+
+                  // Each element has 4 inward normals
+                  for (size_t j = 0; j < 4; ++j) {
+                    const double nx = inward_normals_M[element_index][j][0];
+                    const double ny = inward_normals_M[element_index][j][1];
+                    const double nz = inward_normals_M[element_index][j][2];
+
+                    // Only rotation
+                    inward_normals_W[element_index][j][0] =
+                        T[0] * nx + T[1] * ny + T[2] * nz;
+                    inward_normals_W[element_index][j][1] =
+                        T[4] * nx + T[5] * ny + T[6] * nz;
+                    inward_normals_W[element_index][j][2] =
+                        T[8] * nx + T[9] * ny + T[10] * nz;
+                  }
+                });
           });
-    });
 
-    // Transform inward normals
-    auto transform_elem_quantities_event1 =
-        q_device_.submit([&](sycl::handler& h) {
-          const size_t work_group_size = 256;
-          const size_t global_elements =
-              RoundUpToWorkGroupSize(total_elements_, work_group_size);
-          h.parallel_for<TransformInwardNormalsKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_elements),
-                                sycl::range<1>(work_group_size)),
-              [=, inward_normals_M = mesh_data_.inward_normals_M,
-               inward_normals_W = mesh_data_.inward_normals_W,
-               element_mesh_ids = mesh_data_.element_mesh_ids,
-               transforms = mesh_data_.transforms,
-               total_elements_ = total_elements_]
+      // Transform pressure gradients
+      auto transform_elem_quantities_event2 =
+          q_device_.submit([&](sycl::handler& h) {
+            const size_t work_group_size = 256;
+            const size_t global_elements =
+                RoundUpToWorkGroupSize(total_elements_, work_group_size);
+            h.parallel_for<TransformPressureGradientsKernel>(
+                sycl::nd_range<1>(sycl::range<1>(global_elements),
+                                  sycl::range<1>(work_group_size)),
+                [=,
+                 gradient_M_pressure_at_Mo =
+                     mesh_data_.gradient_M_pressure_at_Mo,
+                 gradient_W_pressure_at_Wo =
+                     mesh_data_.gradient_W_pressure_at_Wo,
+                 element_mesh_ids = mesh_data_.element_mesh_ids,
+                 transforms = mesh_data_.transforms,
+                 total_elements_ = total_elements_]
 #ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(256)]]
+                [[sycl::reqd_work_group_size(256)]]
 #endif
-              (sycl::nd_item<1> item) {
-                const size_t element_index = item.get_global_id(0);
-                if (element_index >= total_elements_) return;
+                (sycl::nd_item<1> item) {
+                  const size_t element_index = item.get_global_id(0);
+                  if (element_index >= total_elements_) return;
 
-                const size_t mesh_index = element_mesh_ids[element_index];
+                  const size_t mesh_index = element_mesh_ids[element_index];
 
-                double T[12];
+                  double T[12];
 #pragma unroll
-                for (size_t i = 0; i < 12; ++i) {
-                  T[i] = transforms[mesh_index * 12 + i];
-                }
+                  for (size_t i = 0; i < 12; ++i) {
+                    T[i] = transforms[mesh_index * 12 + i];
+                  }
+                  // Each element has 1 pressure gradient
+                  const double gp_mx =
+                      gradient_M_pressure_at_Mo[element_index][0];
+                  const double gp_my =
+                      gradient_M_pressure_at_Mo[element_index][1];
+                  const double gp_mz =
+                      gradient_M_pressure_at_Mo[element_index][2];
+                  const double p_mo =
+                      gradient_M_pressure_at_Mo[element_index][3];
 
-                // Each element has 4 inward normals
-                for (size_t j = 0; j < 4; ++j) {
-                  const double nx = inward_normals_M[element_index][j][0];
-                  const double ny = inward_normals_M[element_index][j][1];
-                  const double nz = inward_normals_M[element_index][j][2];
+                  // Only rotation for the gradient pressures
+                  const double gp_wx =
+                      T[0] * gp_mx + T[1] * gp_my + T[2] * gp_mz;
+                  const double gp_wy =
+                      T[4] * gp_mx + T[5] * gp_my + T[6] * gp_mz;
+                  const double gp_wz =
+                      T[8] * gp_mx + T[9] * gp_my + T[10] * gp_mz;
 
-                  // Only rotation
-                  inward_normals_W[element_index][j][0] =
-                      T[0] * nx + T[1] * ny + T[2] * nz;
-                  inward_normals_W[element_index][j][1] =
-                      T[4] * nx + T[5] * ny + T[6] * nz;
-                  inward_normals_W[element_index][j][2] =
-                      T[8] * nx + T[9] * ny + T[10] * nz;
-                }
-              });
-        });
+                  // TODO(huzaifa): Check this computation
+                  // By equating the rotated pressure field with the original
+                  // pressure field, we can solve for the pressure at the origin
+                  // of the world frame
+                  const double p_wo =
+                      p_mo - (gp_wx * T[3] + gp_wy * T[7] + gp_wz * T[11]);
+                  gradient_W_pressure_at_Wo[element_index][0] = gp_wx;
+                  gradient_W_pressure_at_Wo[element_index][1] = gp_wy;
+                  gradient_W_pressure_at_Wo[element_index][2] = gp_wz;
+                  gradient_W_pressure_at_Wo[element_index][3] = p_wo;
+                });
+          });
 
-    // Transform pressure gradients
-    auto transform_elem_quantities_event2 =
-        q_device_.submit([&](sycl::handler& h) {
-          const size_t work_group_size = 256;
-          const size_t global_elements =
-              RoundUpToWorkGroupSize(total_elements_, work_group_size);
-          h.parallel_for<TransformPressureGradientsKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_elements),
-                                sycl::range<1>(work_group_size)),
-              [=,
-               gradient_M_pressure_at_Mo = mesh_data_.gradient_M_pressure_at_Mo,
-               gradient_W_pressure_at_Wo = mesh_data_.gradient_W_pressure_at_Wo,
-               element_mesh_ids = mesh_data_.element_mesh_ids,
-               transforms = mesh_data_.transforms,
-               total_elements_ = total_elements_]
-#ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(256)]]
-#endif
-              (sycl::nd_item<1> item) {
-                const size_t element_index = item.get_global_id(0);
-                if (element_index >= total_elements_) return;
+      // =========================================
+      // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
+      // =========================================
+      auto [element_aabb_event, generate_collision_filterevent] =
+          NaiveBroadPhase(q_device_, mesh_data_, collision_data_,
+                          total_elements_, total_checks_,
+                          transform_vertices_event,
+                          collision_filtermemset_event);
+      // generate_collision_filterevent.wait();
+      GraphBroadPhase_.end_recording(q_device_);
+      ExecGraph_BroadPhase = GraphBroadPhase_.finalize();
+    }
 
-                const size_t mesh_index = element_mesh_ids[element_index];
-
-                double T[12];
-#pragma unroll
-                for (size_t i = 0; i < 12; ++i) {
-                  T[i] = transforms[mesh_index * 12 + i];
-                }
-                // Each element has 1 pressure gradient
-                const double gp_mx =
-                    gradient_M_pressure_at_Mo[element_index][0];
-                const double gp_my =
-                    gradient_M_pressure_at_Mo[element_index][1];
-                const double gp_mz =
-                    gradient_M_pressure_at_Mo[element_index][2];
-                const double p_mo = gradient_M_pressure_at_Mo[element_index][3];
-
-                // Only rotation for the gradient pressures
-                const double gp_wx = T[0] * gp_mx + T[1] * gp_my + T[2] * gp_mz;
-                const double gp_wy = T[4] * gp_mx + T[5] * gp_my + T[6] * gp_mz;
-                const double gp_wz =
-                    T[8] * gp_mx + T[9] * gp_my + T[10] * gp_mz;
-
-                // TODO(huzaifa): Check this computation
-                // By equating the rotated pressure field with the original
-                // pressure field, we can solve for the pressure at the origin
-                // of the world frame
-                const double p_wo =
-                    p_mo - (gp_wx * T[3] + gp_wy * T[7] + gp_wz * T[11]);
-                gradient_W_pressure_at_Wo[element_index][0] = gp_wx;
-                gradient_W_pressure_at_Wo[element_index][1] = gp_wy;
-                gradient_W_pressure_at_Wo[element_index][2] = gp_wz;
-                gradient_W_pressure_at_Wo[element_index][3] = p_wo;
-              });
-        });
-
-    // =========================================
-    // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
-    // =========================================
-    auto [element_aabb_event, generate_collision_filterevent] = NaiveBroadPhase(
-        q_device_, mesh_data_, collision_data_, total_elements_, total_checks_,
-        transform_vertices_event, collision_filtermemset_event);
-    generate_collision_filterevent.wait();
+    // Execute the graph (this happens every time)
+    q_device_.ext_oneapi_graph(ExecGraph_BroadPhase.value());
+    q_device_.wait_and_throw();
 
     // =========================================
     // Generate list of check_indices that are active
@@ -580,71 +613,79 @@ class SyclProximityEngine::Impl {
       current_polygon_areas_size_ = new_size;
     }
 
-    /// Reset quantities that need to be reset across timesteps
-    std::vector<sycl::event> fill_events;
-    fill_events.push_back(q_device_.fill(
-        collision_data_.narrow_phase_check_validity, static_cast<uint8_t>(1),
-        current_polygon_areas_size_));  // All valid at the start
-    fill_events.push_back(
-        q_device_.fill(collision_data_.prefix_sum_narrow_phase_checks, 0,
-                       current_polygon_areas_size_));
+    if (!ExecGraph_NarrowPhase.has_value()) {
+      GraphNarrowPhase_.begin_recording(q_device_);
 
-    auto fill_narrow_phase_check_indicesevent =
-        q_device_.submit([&](sycl::handler& h) {
-          h.depends_on(generate_collision_filterevent);
-          const size_t work_group_size = 1024;
-          const size_t global_checks =
-              RoundUpToWorkGroupSize(total_checks_, work_group_size);
-          h.parallel_for<FillNarrowPhaseCheckIndicesKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_checks),
-                                sycl::range<1>(work_group_size)),
-              [=,
-               narrow_phase_check_indices =
-                   collision_data_.narrow_phase_check_indices,
-               prefix_sum_total_checks =
-                   collision_data_.prefix_sum_total_checks,
-               collision_filter = collision_data_.collision_filter,
-               total_checks_ = total_checks_]
+      /// Reset quantities that need to be reset across timesteps
+      std::vector<sycl::event> fill_events;
+      fill_events.push_back(q_device_.fill(
+          collision_data_.narrow_phase_check_validity, static_cast<uint8_t>(1),
+          current_polygon_areas_size_));  // All valid at the start
+      fill_events.push_back(
+          q_device_.fill(collision_data_.prefix_sum_narrow_phase_checks, 0,
+                         current_polygon_areas_size_));
+
+      auto fill_narrow_phase_check_indicesevent =
+          q_device_.submit([&](sycl::handler& h) {
+            const size_t work_group_size = 1024;
+            const size_t global_checks =
+                RoundUpToWorkGroupSize(total_checks_, work_group_size);
+            h.parallel_for<FillNarrowPhaseCheckIndicesKernel>(
+                sycl::nd_range<1>(sycl::range<1>(global_checks),
+                                  sycl::range<1>(work_group_size)),
+                [=,
+                 narrow_phase_check_indices =
+                     collision_data_.narrow_phase_check_indices,
+                 prefix_sum_total_checks =
+                     collision_data_.prefix_sum_total_checks,
+                 collision_filter = collision_data_.collision_filter,
+                 total_checks_ = total_checks_]
 #ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(1024)]]
+                [[sycl::reqd_work_group_size(1024)]]
 #endif
-              (sycl::nd_item<1> item) {
-                const size_t check_index = item.get_global_id(0);
-                if (check_index >= total_checks_) return;
-                if (collision_filter[check_index] == 1) {
-                  size_t narrow_check_num =
-                      prefix_sum_total_checks[check_index];
-                  narrow_phase_check_indices[narrow_check_num] = check_index;
-                }
-              });
-        });
+                (sycl::nd_item<1> item) {
+                  const size_t check_index = item.get_global_id(0);
+                  if (check_index >= total_checks_) return;
+                  if (collision_filter[check_index] == 1) {
+                    size_t narrow_check_num =
+                        prefix_sum_total_checks[check_index];
+                    narrow_phase_check_indices[narrow_check_num] = check_index;
+                  }
+                });
+          });
 
-    // Create dependency vector
-    std::vector<sycl::event> dependencies = {
-        generate_collision_filterevent, fill_narrow_phase_check_indicesevent,
-        transform_elem_quantities_event1, transform_elem_quantities_event2};
-    // Add polygon fill events to dependencies
-    dependencies.insert(dependencies.end(), fill_events.begin(),
-                        fill_events.end());
+      // Create dependency vector
+      std::vector<sycl::event> dependencies = {
+          fill_narrow_phase_check_indicesevent};
+      // Add polygon fill events to dependencies
+      dependencies.insert(dependencies.end(), fill_events.begin(),
+                          fill_events.end());
 #ifdef DRAKE_SYCL_TIMING_ENABLED
-    timing_logger_.StartKernel("compute_contact_polygons");
+      timing_logger_.StartKernel("compute_contact_polygons");
 #endif
-    sycl::event compute_contact_polygon_event;
-    if (q_device_.get_device().get_info<sycl::info::device::device_type>() ==
-        sycl::info::device_type::gpu) {
-      compute_contact_polygon_event =
-          LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
-                                          DevicePolygonData, DeviceType::GPU>(
-              q_device_, dependencies, total_narrow_phase_checks_,
-              collision_data_, mesh_data_, polygon_data_);
-    } else {
-      compute_contact_polygon_event =
-          LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
-                                          DevicePolygonData, DeviceType::CPU>(
-              q_device_, dependencies, total_narrow_phase_checks_,
-              collision_data_, mesh_data_, polygon_data_);
+      sycl::event compute_contact_polygon_event;
+      if (q_device_.get_device().get_info<sycl::info::device::device_type>() ==
+          sycl::info::device_type::gpu) {
+        compute_contact_polygon_event =
+            LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
+                                            DevicePolygonData, DeviceType::GPU>(
+                q_device_, dependencies, total_narrow_phase_checks_,
+                collision_data_, mesh_data_, polygon_data_);
+      } else {
+        compute_contact_polygon_event =
+            LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
+                                            DevicePolygonData, DeviceType::CPU>(
+                q_device_, dependencies, total_narrow_phase_checks_,
+                collision_data_, mesh_data_, polygon_data_);
+      }
+      GraphNarrowPhase_.end_recording(q_device_);
+      ExecGraph_NarrowPhase = GraphNarrowPhase_.finalize();
     }
-    compute_contact_polygon_event.wait_and_throw();
+
+    // compute_contact_polygon_event.wait_and_throw();
+    // Execute the graph (this happens every time)
+    q_device_.ext_oneapi_graph(ExecGraph_NarrowPhase.value());
+    q_device_.wait_and_throw();
 
     // Exclusive scan to compact data into only the valid polygons found by
     // SYCL
@@ -706,7 +747,7 @@ class SyclProximityEngine::Impl {
     memset_event.wait_and_throw();
     auto fill_valid_polygon_indicesevent =
         q_device_.submit([&](sycl::handler& h) {
-          h.depends_on(compute_contact_polygon_event);
+          // h.depends_on(compute_contact_polygon_event);
           h.parallel_for<FillValidPolygonIndicesKernel>(
               sycl::range<1>(total_narrow_phase_checks_),
               [=, valid_polygon_indices = polygon_data_.valid_polygon_indices,
@@ -824,13 +865,16 @@ class SyclProximityEngine::Impl {
   }
 
   friend class SyclProximityEngineTester;
-  // We have a CPU queue for operations beneficial to perform on the host
-  // and a device queue for operations beneficial to perform on the
-  // Accelerator. Note: q_device_ HAS TO BE declared before mem_mgr_ since
-  // it needs to be initialized first.
+  // Note: q_device_ HAS TO BE declared before mem_mgr_ and that before Graph_
+  // since it needs to be initialized first.
   sycl::queue q_device_;
-
   SyclMemoryManager mem_mgr_;
+  sycl_ext::command_graph<sycl_ext::graph_state::modifiable> GraphBroadPhase_;
+  sycl_ext::command_graph<sycl_ext::graph_state::modifiable> GraphNarrowPhase_;
+  std::optional<sycl_ext::command_graph<sycl_ext::graph_state::executable>>
+      ExecGraph_BroadPhase;
+  std::optional<sycl_ext::command_graph<sycl_ext::graph_state::executable>>
+      ExecGraph_NarrowPhase;
   DeviceMeshData mesh_data_;
   DeviceCollisionData collision_data_;
   DevicePolygonData polygon_data_;

@@ -233,7 +233,7 @@ void PrintPerformanceStats(
   if (env_var != nullptr) {
     runtime_device = env_var;
   }
-  std::string out_dir = "/home/huzaifaunjhawala/drake/performance_jsons/";
+  std::string out_dir = "/home/huzaifaunjhawala/drake/performance_jsons2/";
   std::string run_type;
   if (runtime_device.empty()) {
     run_type = sycl_used ? "sycl-gpu" : "drake-cpu";
