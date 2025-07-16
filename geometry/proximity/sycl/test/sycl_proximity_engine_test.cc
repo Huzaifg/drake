@@ -287,7 +287,7 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
   // Get the total checks
   auto impl = SyclProximityEngineAttorney::get_impl(engine);
   // Geom A checks 2 elements against 6 = 12 checks
-  // Geom B checks 2 elements against 4 = 8 checks  
+  // Geom B checks 2 elements against 4 = 8 checks
   // Geom C checks 2 elements against 2 = 4 checks
   // Geom D checks none
   // Total = 24 checks
@@ -299,14 +299,13 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
 
   // Expected pattern: only adjacent meshes should be colliding
   std::vector<uint8_t> expected_collision_filter{
-      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,   // A checks
-      0, 0, 0, 0, 1, 0, 0, 0,   // B checks  
-      0, 0, 1, 0};   // C checks
+      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,  // A checks
+      0, 0, 0, 0, 1, 0, 0, 0,              // B checks
+      0, 0, 1, 0};                         // C checks
 
   for (size_t i = 0; i < 24; ++i) {
     EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
   }
-
 }
 
 GTEST_TEST(SPETest, TwoSpheresColliding) {
@@ -944,6 +943,13 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   std::vector<size_t> expected_prefix_sum(expected_filter.size());
   std::exclusive_scan(expected_filter.begin(), expected_filter.end(),
                       expected_prefix_sum.begin(), 0);
+  for (int i = 0; i < ssize(expected_prefix_sum); ++i) {
+    if (prefix_sum[i] != expected_prefix_sum[i]) {
+      std::cout << "prefix_sum[" << i << "] = " << prefix_sum[i]
+                << " != expected_prefix_sum[" << i
+                << "] = " << expected_prefix_sum[i] << std::endl;
+    }
+  }
   EXPECT_EQ(prefix_sum, expected_prefix_sum);
 
   // Get polygon areas and centroids

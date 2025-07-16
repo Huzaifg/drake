@@ -79,7 +79,7 @@ class CustomExclusiveScan {
                          }
                        });
       });
-      event2.wait();
+      event2.wait_and_throw();
       sycl::free(scanned_block_sums, queue_);
     }
     sycl::free(block_sums, queue_);
@@ -145,7 +145,7 @@ class CustomExclusiveScan {
                          }
                        });
       });
-      event2.wait();
+      event2.wait_and_throw();
       sycl::free(scanned_block_sums, queue_);
     }
     sycl::free(block_sums, queue_);

@@ -22,6 +22,7 @@
 #include "drake/geometry/proximity/sycl/sycl_hydroelastic_surface.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_contact_polygon.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_equilibrium_plane.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_exclusive_scan.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_hydroelastic_surface_creator.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_naive_broad_phase.h"
@@ -269,10 +270,14 @@ class SyclProximityEngine::Impl {
               collision_data_.geom_collision_filter_check_offsets[i],
           i, num_checks));
     }
+    auto prefix_sum_total_checks_memset_event =
+        q_device_.memset(collision_data_.prefix_sum_total_checks, 0,
+                         total_checks_ * sizeof(size_t));
 
     // Wait for all transfers to complete before returning
     sycl::event::wait_and_throw(transfer_events);
     sycl::event::wait_and_throw(collision_filter_host_body_indexfill_events);
+    prefix_sum_total_checks_memset_event.wait_and_throw();
   }
 
   // Copy constructor
@@ -554,6 +559,11 @@ class SyclProximityEngine::Impl {
     // =========================================
 
     auto policy = oneapi::dpl::execution::make_device_policy(q_device_);
+
+    // CustomExclusiveScan exclusive_scan(q_device_);
+    // exclusive_scan(collision_data_.collision_filter,
+    //                collision_data_.prefix_sum_total_checks, total_checks_);
+    // q_device_.wait_and_throw();
 
     // Perform the exclusive scan using USM pointers as iterators
     // We need to convert uint8_t collision_filter values to size_t for the
