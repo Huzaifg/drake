@@ -9,7 +9,6 @@
 
 #include "drake/common/eigen_types.h"
 #include "drake/geometry/geometry_ids.h"
-#include "drake/geometry/proximity/hydroelastic_internal.h"
 
 namespace drake {
 namespace geometry {
@@ -98,6 +97,8 @@ struct DeviceMeshData {
   uint32_t* vertex_counts = nullptr;
   GeometryId* geometry_ids = nullptr;
   double* transforms = nullptr;
+  uint32_t total_elements;
+  uint32_t total_vertices;
 };
 
 // Structure to hold collision detection memory
@@ -144,237 +145,128 @@ struct DevicePolygonData {
   double* debug_polygon_vertices = nullptr;
 };
 
-// Helper functions for memory allocation and initialization
+// Struct's for BVH broad phase implementation
+// Reference: Warp (https://github.com/NVIDIA/warp/blob/main/warp/native/bvh.h)
+struct BVHPackedNodeHalf {
+  float x;
+  float y;
+  float z;
+  // For non-leaf nodes:
+  // - 'lower.i' represents the index of the left child node.
+  // - 'upper.i' represents the index of the right child node.
+  //
+  // For leaf nodes:
+  // - 'lower.i' indicates the start index of the primitives (AABB) in
+  // 'primitive_indices'.
+  // - 'upper.i' indicates the index just after the last primitive (AABB) in
+  // 'primitive_indices'
+  unsigned int i : 31;
+  unsigned int b : 1;
+};
+struct BVH {
+  BVHPackedNodeHalf* node_lowers;  // See BVHPackedNodeHalf for details
+  BVHPackedNodeHalf* node_uppers;  // See BVHPackedNodeHalf for details
+
+  // used for fast refits
+  int* node_parents;
+  int* node_counts;
+  // reordered primitive indices corresponds to the ordering of leaf nodes
+  // Not owned by the BVH, just points to indicesAll in DeviceBVHData
+  uint32_t* primitive_indices;
+
+  int max_depth;
+  int max_nodes;
+  int num_nodes;
+  // since we use packed leaf nodes, the number of them is no longer the number
+  // of items, but variable
+  int num_leaf_nodes;
+
+  // pointer (CPU or GPU) to a single integer index in node_lowers, node_uppers
+  // representing the root of the tree, this is not always the first node
+  // for bottom-up builders
+  int* root;
+
+  // item bounds are not owned by the BVH but by the caller
+  Vector3<double>* item_lowers;
+  Vector3<double>* item_uppers;
+  int num_items;
+};
+
+struct DeviceBVHData {
+  // Permenant data only deleted with the SYCL proximity engine
+  BVH* bvhAll = nullptr;
+  uint32_t* node_counts_per_mesh = nullptr;
+  uint32_t* node_offsets = nullptr;
+  uint32_t* node_mesh_ids = nullptr;
+  Vector3<double>* total_lowerAll = nullptr;
+  Vector3<double>* total_upperAll = nullptr;
+  Vector3<double>* total_inv_edgesAll = nullptr;
+  // This is modified in place to point to mesh local primitive index
+  // If this is used again to get primitive AABBs from mesh_data, it needs the
+  // mesh wise element offset added to it
+  uint32_t* indicesAll = nullptr;
+
+  // Temp data deleted after tree construction
+  uint32_t* keysAll = nullptr;  // Morton keys of all elements
+  uint32_t* deltasAll =
+      nullptr;  // deltasAll[index] is the delta of key index and index+1
+  uint32_t* range_leftsAll =
+      nullptr;  // Each node stores the range of primitives it covers. This is
+                // the left limit of the range
+  uint32_t* range_rightsAll = nullptr;  // This is the right limit of the range
+  uint32_t* num_childrenAll =
+      nullptr;  // This is the number of children of the node
+  uint32_t num_meshes;
+  uint32_t total_nodes;
+};
+
 class SyclMemoryHelper {
  public:
-  // Allocate all mesh-related device memory
-  static inline void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
-                                        DeviceMeshData& mesh_data,
-                                        uint32_t num_geometries) {
-    // Allocate lookup arrays (host accessible)
-    mesh_data.element_offsets = mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    mesh_data.vertex_offsets = mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    mesh_data.element_counts = mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    mesh_data.vertex_counts = mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    mesh_data.geometry_ids = mem_mgr.AllocateHost<GeometryId>(num_geometries);
-    mesh_data.transforms = mem_mgr.AllocateHost<double>(num_geometries * 12);
-  }
-
-  static inline void AllocateMeshElementVerticesMemory(
-      SyclMemoryManager& mem_mgr, DeviceMeshData& mesh_data,
-      uint32_t total_elements, uint32_t total_vertices) {
-    // Allocate element data
-    mesh_data.elements =
-        mem_mgr.AllocateDevice<std::array<int, 4>>(total_elements);
-    mesh_data.element_mesh_ids =
-        mem_mgr.AllocateDevice<uint32_t>(total_elements);
-    mesh_data.inward_normals_M =
-        mem_mgr.AllocateDevice<std::array<Vector3<double>, 4>>(total_elements);
-    mesh_data.inward_normals_W =
-        mem_mgr.AllocateDevice<std::array<Vector3<double>, 4>>(total_elements);
-    mesh_data.min_pressures = mem_mgr.AllocateDevice<double>(total_elements);
-    mesh_data.max_pressures = mem_mgr.AllocateDevice<double>(total_elements);
-    mesh_data.gradient_M_pressure_at_Mo =
-        mem_mgr.AllocateDevice<Vector4<double>>(total_elements);
-    mesh_data.gradient_W_pressure_at_Wo =
-        mem_mgr.AllocateDevice<Vector4<double>>(total_elements);
-    mesh_data.element_aabb_min_W =
-        mem_mgr.AllocateDevice<Vector3<double>>(total_elements);
-    mesh_data.element_aabb_max_W =
-        mem_mgr.AllocateDevice<Vector3<double>>(total_elements);
-
-    // Allocate vertex data
-    mesh_data.vertices_M =
-        mem_mgr.AllocateDevice<Vector3<double>>(total_vertices);
-    mesh_data.vertices_W =
-        mem_mgr.AllocateDevice<Vector3<double>>(total_vertices);
-    mesh_data.pressures = mem_mgr.AllocateDevice<double>(total_vertices);
-    mesh_data.vertex_mesh_ids =
-        mem_mgr.AllocateDevice<uint32_t>(total_vertices);
-  }
-
-  // Allocate collision detection memory of arrays based on number of geometries
-  static inline void AllocateGeometryCollisionMemory(
+  static void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
+                                 DeviceMeshData& mesh_data,
+                                 uint32_t num_geometries);
+  static void AllocateBVHPerMeshMemory(SyclMemoryManager& mem_mgr,
+                                       DeviceBVHData& bvh_data,
+                                       uint32_t num_geometries);
+  static void AllocateBVHTempMemory(SyclMemoryManager& mem_mgr,
+                                    DeviceBVHData& bvh_data,
+                                    uint32_t total_elements);
+  static void AllocateMeshElementVerticesMemory(SyclMemoryManager& mem_mgr,
+                                                DeviceMeshData& mesh_data,
+                                                uint32_t total_elements,
+                                                uint32_t total_vertices);
+  static void AllocateGeometryCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      uint32_t num_geometries) {
-    collision_data.total_checks_per_geometry =
-        mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    // geom_collision_filternum_cols[i] is the number of elements that need to
-    // be checked with each of the elements of the ith geometry
-    // Will be highest for 1st geometry and lowest for the last geometry (due to
-    // symmetric nature of collision_filter - we are only consider upper
-    // triangle)
-    collision_data.geom_collision_filter_num_cols =
-        mem_mgr.AllocateHost<uint32_t>(num_geometries);
-    // Stores the exclusive scan of total checks per geometry
-    collision_data.geom_collision_filter_check_offsets =
-        mem_mgr.AllocateHost<uint32_t>(num_geometries);
-  }
-
-  // Allocate collision detection memory of arrays based on total checks
-  static inline void AllocateTotalChecksCollisionMemory(
+      uint32_t num_geometries);
+  static void AllocateTotalChecksCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      uint32_t total_checks) {
-    // Broad phase data
-    collision_data.collision_filter =
-        mem_mgr.AllocateDevice<uint8_t>(total_checks);
-    collision_data.collision_filter_host_body_index =
-        mem_mgr.AllocateHost<uint32_t>(total_checks);
-    collision_data.prefix_sum_total_checks =
-        mem_mgr.AllocateDevice<uint32_t>(total_checks);
-  }
-
-  // Allocate collision detection memory of arrays based on estimated narrow
-  // phase checks
-  static inline void AllocateNarrowPhaseChecksCollisionMemory(
+      uint32_t num_geometries);
+  static void AllocateNarrowPhaseChecksCollisionMemory(
       SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
-      uint32_t estimated_narrow_phase_checks) {
-    // Narrow phase data
-    collision_data.narrow_phase_check_indices =
-        mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
-    collision_data.narrow_phase_check_validity =
-        mem_mgr.AllocateDevice<uint8_t>(estimated_narrow_phase_checks);
-    collision_data.prefix_sum_narrow_phase_checks =
-        mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
-  }
-
-  // Allocate polygon memory
-  static inline void AllocateFullPolygonMemory(
-      SyclMemoryManager& mem_mgr, DevicePolygonData& polygon_data,
-      uint32_t estimated_narrow_phase_checks) {
-    // Raw polygon data
-    polygon_data.polygon_areas =
-        mem_mgr.AllocateDevice<double>(estimated_narrow_phase_checks);
-    polygon_data.polygon_centroids =
-        mem_mgr.AllocateDevice<Vector3<double>>(estimated_narrow_phase_checks);
-    polygon_data.polygon_normals =
-        mem_mgr.AllocateDevice<Vector3<double>>(estimated_narrow_phase_checks);
-    polygon_data.polygon_g_M =
-        mem_mgr.AllocateDevice<double>(estimated_narrow_phase_checks);
-    polygon_data.polygon_g_N =
-        mem_mgr.AllocateDevice<double>(estimated_narrow_phase_checks);
-    polygon_data.polygon_pressure_W =
-        mem_mgr.AllocateDevice<double>(estimated_narrow_phase_checks);
-    polygon_data.polygon_geom_index_A =
-        mem_mgr.AllocateDevice<GeometryId>(estimated_narrow_phase_checks);
-    polygon_data.polygon_geom_index_B =
-        mem_mgr.AllocateDevice<GeometryId>(estimated_narrow_phase_checks);
-  }
-
-  static inline void AllocateCompactPolygonMemory(
-      SyclMemoryManager& mem_mgr, DevicePolygonData& polygon_data,
-      uint32_t estimated_polygons) {
-    // Compacted polygon data
-    polygon_data.compacted_polygon_areas =
-        mem_mgr.AllocateDevice<double>(estimated_polygons);
-    polygon_data.compacted_polygon_centroids =
-        mem_mgr.AllocateDevice<Vector3<double>>(estimated_polygons);
-    polygon_data.compacted_polygon_normals =
-        mem_mgr.AllocateDevice<Vector3<double>>(estimated_polygons);
-    polygon_data.compacted_polygon_g_M =
-        mem_mgr.AllocateDevice<double>(estimated_polygons);
-    polygon_data.compacted_polygon_g_N =
-        mem_mgr.AllocateDevice<double>(estimated_polygons);
-    polygon_data.compacted_polygon_pressure_W =
-        mem_mgr.AllocateDevice<double>(estimated_polygons);
-    polygon_data.compacted_polygon_geom_index_A =
-        mem_mgr.AllocateDevice<GeometryId>(estimated_polygons);
-    polygon_data.compacted_polygon_geom_index_B =
-        mem_mgr.AllocateDevice<GeometryId>(estimated_polygons);
-
-    polygon_data.valid_polygon_indices =
-        mem_mgr.AllocateDevice<uint32_t>(estimated_polygons);
-  }
-
-  // Free all mesh memory
-  static inline void FreeMeshMemory(SyclMemoryManager& mem_mgr,
-                                    DeviceMeshData& mesh_data) {
-    // Element data
-    mem_mgr.Free(mesh_data.elements);
-    mem_mgr.Free(mesh_data.element_mesh_ids);
-    mem_mgr.Free(mesh_data.inward_normals_M);
-    mem_mgr.Free(mesh_data.inward_normals_W);
-    mem_mgr.Free(mesh_data.min_pressures);
-    mem_mgr.Free(mesh_data.max_pressures);
-    mem_mgr.Free(mesh_data.gradient_M_pressure_at_Mo);
-    mem_mgr.Free(mesh_data.gradient_W_pressure_at_Wo);
-    mem_mgr.Free(mesh_data.element_aabb_min_W);
-    mem_mgr.Free(mesh_data.element_aabb_max_W);
-
-    // Vertex data
-    mem_mgr.Free(mesh_data.vertices_M);
-    mem_mgr.Free(mesh_data.vertices_W);
-    mem_mgr.Free(mesh_data.pressures);
-    mem_mgr.Free(mesh_data.vertex_mesh_ids);
-
-    // Lookup arrays
-    mem_mgr.Free(mesh_data.element_offsets);
-    mem_mgr.Free(mesh_data.vertex_offsets);
-    mem_mgr.Free(mesh_data.element_counts);
-    mem_mgr.Free(mesh_data.vertex_counts);
-    mem_mgr.Free(mesh_data.geometry_ids);
-    mem_mgr.Free(mesh_data.transforms);
-  }
-
-  // Free collision memory
-  static inline void FreeCollisionMemory(SyclMemoryManager& mem_mgr,
-                                         DeviceCollisionData& collision_data) {
-    mem_mgr.Free(collision_data.collision_filter);
-    mem_mgr.Free(collision_data.collision_filter_host_body_index);
-    mem_mgr.Free(collision_data.total_checks_per_geometry);
-    mem_mgr.Free(collision_data.geom_collision_filter_num_cols);
-    mem_mgr.Free(collision_data.geom_collision_filter_check_offsets);
-    mem_mgr.Free(collision_data.prefix_sum_total_checks);
-    mem_mgr.Free(collision_data.narrow_phase_check_indices);
-    mem_mgr.Free(collision_data.narrow_phase_check_validity);
-    mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);
-  }
-
-  // Free only the collision detection memory of arrays based on narrow phase
-  // checks
-  static inline void FreeNarrowPhaseChecksCollisionMemory(
-      SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data) {
-    mem_mgr.Free(collision_data.narrow_phase_check_indices);
-    mem_mgr.Free(collision_data.narrow_phase_check_validity);
-    mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);
-  }
-
-  // Free polygon memory
-  static inline void FreeFullPolygonMemory(SyclMemoryManager& mem_mgr,
-                                           DevicePolygonData& polygon_data) {
-    // Raw polygon data
-    mem_mgr.Free(polygon_data.polygon_areas);
-    mem_mgr.Free(polygon_data.polygon_centroids);
-    mem_mgr.Free(polygon_data.polygon_normals);
-    mem_mgr.Free(polygon_data.polygon_g_M);
-    mem_mgr.Free(polygon_data.polygon_g_N);
-    mem_mgr.Free(polygon_data.polygon_pressure_W);
-    mem_mgr.Free(polygon_data.polygon_geom_index_A);
-    mem_mgr.Free(polygon_data.polygon_geom_index_B);
-
-    // Debug data
-    mem_mgr.Free(polygon_data.debug_polygon_vertices);
-  }
-
-  static inline void FreeCompactPolygonMemory(SyclMemoryManager& mem_mgr,
-                                              DevicePolygonData& polygon_data) {
-    // Compacted polygon data
-    mem_mgr.Free(polygon_data.compacted_polygon_areas);
-    mem_mgr.Free(polygon_data.compacted_polygon_centroids);
-    mem_mgr.Free(polygon_data.compacted_polygon_normals);
-    mem_mgr.Free(polygon_data.compacted_polygon_g_M);
-    mem_mgr.Free(polygon_data.compacted_polygon_g_N);
-    mem_mgr.Free(polygon_data.compacted_polygon_pressure_W);
-    mem_mgr.Free(polygon_data.compacted_polygon_geom_index_A);
-    mem_mgr.Free(polygon_data.compacted_polygon_geom_index_B);
-    mem_mgr.Free(polygon_data.valid_polygon_indices);
-  }
-
-  static inline void FreePolygonMemory(SyclMemoryManager& mem_mgr,
-                                       DevicePolygonData& polygon_data) {
-    FreeFullPolygonMemory(mem_mgr, polygon_data);
-    FreeCompactPolygonMemory(mem_mgr, polygon_data);
-  }
+      uint32_t num_geometries);
+  static void AllocateFullPolygonMemory(SyclMemoryManager& mem_mgr,
+                                        DevicePolygonData& polygon_data,
+                                        uint32_t num_geometries);
+  static void AllocateCompactPolygonMemory(SyclMemoryManager& mem_mgr,
+                                           DevicePolygonData& polygon_data,
+                                           uint32_t num_geometries);
+  static void FreeMeshMemory(SyclMemoryManager& mem_mgr,
+                             DeviceMeshData& mesh_data);
+  static void FreeBVHMeshMemory(SyclMemoryManager& mem_mgr, BVH& bvh_mesh);
+  static void FreeBVHNonTempMemory(SyclMemoryManager& mem_mgr,
+                                   DeviceBVHData& bvh_data);
+  static void FreeBVHTempMemory(SyclMemoryManager& mem_mgr,
+                                DeviceBVHData& bvh_data);
+  static void FreeCollisionMemory(SyclMemoryManager& mem_mgr,
+                                  DeviceCollisionData& collision_data);
+  static void FreeNarrowPhaseChecksCollisionMemory(
+      SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data);
+  static void FreeFullPolygonMemory(SyclMemoryManager& mem_mgr,
+                                    DevicePolygonData& polygon_data);
+  static void FreeCompactPolygonMemory(SyclMemoryManager& mem_mgr,
+                                       DevicePolygonData& polygon_data);
+  static void FreePolygonMemory(SyclMemoryManager& mem_mgr,
+                                DevicePolygonData& polygon_data);
 };
 
 }  // namespace sycl_impl

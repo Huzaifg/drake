@@ -1380,7 +1380,7 @@ sycl::event LaunchContactPolygonComputation(
          POLYGON_DOUBLES = POLYGON_DOUBLES, EQ_PLANE_OFFSET = EQ_PLANE_OFFSET,
          VERTEX_A_OFFSET = VERTEX_A_OFFSET, VERTEX_B_OFFSET = VERTEX_B_OFFSET,
          RANDOM_SCRATCH_OFFSET = RANDOM_SCRATCH_OFFSET,
-         POLYGON_VERTICES = POLYGON_VERTICES]
+         POLYGON_VERTICES = POLYGON_VERTICES] [[intel::kernel_args_restrict]]
 #ifndef __NVPTX__
         [[sycl::reqd_sub_group_size(SUB_GROUP_SIZE)]]
 #endif

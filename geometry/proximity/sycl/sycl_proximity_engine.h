@@ -42,7 +42,9 @@ class SyclProximityEngine {
    * queries. To be supplied lazily when contact surface is to be computed. */
   SyclProximityEngine(
       const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>&
-          soft_geometries);
+          soft_geometries,
+      const std::unordered_map<GeometryId, Vector3<double>>& total_lower,
+      const std::unordered_map<GeometryId, Vector3<double>>& total_upper);
 
   /* Default constructor creates an empty engine. */
   SyclProximityEngine();

@@ -2,6 +2,7 @@
 
 #include <array>
 
+#include "geometry/proximity/sycl/utils/sycl_kernel_utils.h"
 #include <sycl/sycl.hpp>
 
 #include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
@@ -11,15 +12,7 @@ namespace geometry {
 namespace internal {
 namespace sycl_impl {
 
-// Forward declarations for kernel names
-class ComputeElementAABBKernel;
 class GenerateCollisionFilterKernel;
-
-// Helper function to round up to nearest multiple of work group size
-SYCL_EXTERNAL inline uint32_t RoundUpToWorkGroupSize(uint32_t n,
-                                                     uint32_t work_group_size) {
-  return ((n + work_group_size - 1) / work_group_size) * work_group_size;
-}
 
 /**
  * @brief Performs naive broad phase collision detection using AABB and pressure
@@ -46,84 +39,15 @@ SYCL_EXTERNAL inline uint32_t RoundUpToWorkGroupSize(uint32_t n,
  * @return std::pair<sycl::event, sycl::event> Pair of events for AABB
  * computation and collision filter generation
  */
-inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
-    sycl::queue& q_device, const DeviceMeshData& mesh_data,
-    const DeviceCollisionData& collision_data, uint32_t total_elements,
-    uint32_t total_checks, sycl::event transform_vertices_event,
-    sycl::event collision_filter_memset_event) {
+inline sycl::event NaiveBroadPhase(sycl::queue& q_device,
+                                   const DeviceMeshData& mesh_data,
+                                   const DeviceCollisionData& collision_data,
+                                   uint32_t total_elements,
+                                   uint32_t total_checks,
+                                   sycl::event element_aabb_event,
+                                   sycl::event collision_filter_memset_event) {
   // =========================================
-  // Command group 1: Compute element AABBs
-  // =========================================
-  auto element_aabb_event = q_device.submit([&](sycl::handler& h) {
-    h.depends_on(transform_vertices_event);
-
-    // Compute all AABBs irrespective if they are needed or not
-    // Allocate device memory for element AABBs
-    // While doing this, assign false to all elements that are not part of
-    // geometries that are collision candidates
-    const uint32_t work_group_size = 256;
-    const uint32_t global_elements =
-        RoundUpToWorkGroupSize(total_elements, work_group_size);
-
-    h.parallel_for<ComputeElementAABBKernel>(
-        sycl::nd_range<1>(sycl::range<1>(global_elements),
-                          sycl::range<1>(work_group_size)),
-        [=, elements = mesh_data.elements, vertices_W = mesh_data.vertices_W,
-         element_mesh_ids = mesh_data.element_mesh_ids,
-         element_aabb_min_W = mesh_data.element_aabb_min_W,
-         element_aabb_max_W = mesh_data.element_aabb_max_W,
-         vertex_offsets = mesh_data.vertex_offsets,
-         total_elements_ = total_elements]
-
-#ifdef __NVPTX__
-        [[sycl::reqd_work_group_size(256)]]
-#endif
-        (sycl::nd_item<1> item) {
-          const uint32_t element_index = item.get_global_id(0);
-          if (element_index >= total_elements_) return;
-
-          const uint32_t geom_index = element_mesh_ids[element_index];
-          // Get the four vertex indices for this tetrahedron
-          const std::array<int, 4>& tet_vertices = elements[element_index];
-          const uint32_t vertex_mesh_offset = vertex_offsets[geom_index];
-
-          // Initialize min/max to first vertex
-          double min_x = vertices_W[vertex_mesh_offset + tet_vertices[0]][0];
-          double min_y = vertices_W[vertex_mesh_offset + tet_vertices[0]][1];
-          double min_z = vertices_W[vertex_mesh_offset + tet_vertices[0]][2];
-
-          double max_x = min_x;
-          double max_y = min_y;
-          double max_z = min_z;
-
-          // Find min/max across all four vertices
-          for (int i = 1; i < 4; ++i) {
-            const uint32_t vertex_idx = vertex_mesh_offset + tet_vertices[i];
-
-            // Update min coordinates
-            min_x = sycl::min(min_x, vertices_W[vertex_idx][0]);
-            min_y = sycl::min(min_y, vertices_W[vertex_idx][1]);
-            min_z = sycl::min(min_z, vertices_W[vertex_idx][2]);
-
-            // Update max coordinates
-            max_x = sycl::max(max_x, vertices_W[vertex_idx][0]);
-            max_y = sycl::max(max_y, vertices_W[vertex_idx][1]);
-            max_z = sycl::max(max_z, vertices_W[vertex_idx][2]);
-          }
-
-          // Store the results
-          element_aabb_min_W[element_index][0] = min_x;
-          element_aabb_min_W[element_index][1] = min_y;
-          element_aabb_min_W[element_index][2] = min_z;
-
-          element_aabb_max_W[element_index][0] = max_x;
-          element_aabb_max_W[element_index][1] = max_y;
-          element_aabb_max_W[element_index][2] = max_z;
-        });
-  });
-
-  // =========================================
-  // Command group 2: Generate collision filter with the AABBs that we computed
+  // Generate collision filter with the AABBs that we computed
   // =========================================
   auto generate_collision_filter_event = q_device.submit([&](sycl::handler& h) {
     h.depends_on({element_aabb_event, collision_filter_memset_event});
@@ -146,7 +70,8 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
          element_aabb_min_W = mesh_data.element_aabb_min_W,
          element_aabb_max_W = mesh_data.element_aabb_max_W,
          min_pressures = mesh_data.min_pressures,
-         max_pressures = mesh_data.max_pressures, total_checks_ = total_checks]
+         max_pressures = mesh_data.max_pressures,
+         total_checks_ = total_checks] [[intel::kernel_args_restrict]]
 
 #ifdef __NVPTX__
         [[sycl::reqd_work_group_size(1024)]]
@@ -199,7 +124,7 @@ inline std::pair<sycl::event, sycl::event> NaiveBroadPhase(
         });
   });
 
-  return {element_aabb_event, generate_collision_filter_event};
+  return generate_collision_filter_event;
 }
 
 }  // namespace sycl_impl

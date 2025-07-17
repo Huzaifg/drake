@@ -802,8 +802,37 @@ class ProximityEngine<T>::Impl : public ShapeReifier {
       HydroelasticContactRepresentation representation,
       const unordered_map<GeometryId, RigidTransform<T>>& X_WGs) const {
     if (!sycl_engine_) {
+      std::unordered_map<GeometryId, Vector3<double>> total_lower_map;
+      std::unordered_map<GeometryId, Vector3<double>> total_upper_map;
+
+      for (const auto& [id, soft_geometry] :
+           hydroelastic_geometries_.SoftGeometries()) {
+        CollisionObjectd* object = nullptr;
+        auto dyn_it = dynamic_objects_.find(id);
+        if (dyn_it != dynamic_objects_.end()) {
+          object = dyn_it->second.get();
+        } else {
+          auto anch_it = anchored_objects_.find(id);
+          if (anch_it != anchored_objects_.end()) {
+            object = anch_it->second.get();
+          }
+        }
+        if (object) {
+          total_lower_map[id] = object->getAABB().min_;
+          total_upper_map[id] = object->getAABB().max_;
+        } else {
+          // Something went wrong since the object has to be in either dynamic
+          // or anchored objects
+          throw std::logic_error(
+              fmt::format("Geometry with id {} has a hydroelastic "
+                          "representation but was not found in "
+                          "either dynamic or anchored objects.",
+                          id));
+        }
+      }
       sycl_engine_ = std::make_unique<sycl_impl::SyclProximityEngine>(
-          hydroelastic_geometries_.SoftGeometries());
+          hydroelastic_geometries_.SoftGeometries(), total_lower_map,
+          total_upper_map);
     }
 
     return sycl_engine_->ComputeSYCLHydroelasticSurface(X_WGs);

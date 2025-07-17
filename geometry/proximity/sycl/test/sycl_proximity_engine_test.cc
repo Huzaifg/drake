@@ -69,21 +69,47 @@ hydroelastic::SoftGeometry MakeSimpleSoftGeometry() {
       hydroelastic::SoftMesh(std::move(mesh), std::move(field)));
 }
 
+std::pair<Vector3<double>, Vector3<double>> ComputeTotalBounds(
+    const VolumeMesh<double>& mesh) {
+  const auto& mesh_elements = mesh.tetrahedra();
+  Vector3<double> min_W = mesh.vertex(0).cast<double>();
+  Vector3<double> max_W = min_W;
+  for (int i = 1; i < mesh.num_vertices(); ++i) {
+    const Vector3<double>& p_W = mesh.vertex(i).cast<double>();
+    min_W = min_W.cwiseMin(p_W);
+    max_W = max_W.cwiseMax(p_W);
+  }
+  return {min_W, max_W};
+}
+
+VolumeMesh<double> TransformMesh(const hydroelastic::SoftGeometry& geometry,
+                                 const RigidTransformd& X_WG) {
+  auto mesh = geometry.soft_mesh().mesh();
+  mesh.TransformVertices(X_WG);
+  return mesh;
+}
+
 GTEST_TEST(SPETest, ZeroMeshes) {
   // Should throw when soft_geometries is empty
   std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries;
+  std::unordered_map<GeometryId, Vector3<double>> total_lower;
+  std::unordered_map<GeometryId, Vector3<double>> total_upper;
   EXPECT_THROW(drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-                   soft_geometries),
+                   soft_geometries, total_lower, total_upper),
                std::runtime_error);
 }
 
 GTEST_TEST(SPETest, SingleMesh) {
   GeometryId id = GeometryId::get_new_id();
   auto geometry = MakeSimpleSoftGeometry();
+
   std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
       {id, geometry}};
+  auto [min_W, max_W] = ComputeTotalBounds(geometry.soft_mesh().mesh());
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{{id, min_W}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{{id, max_W}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+      soft_geometries, total_lower, total_upper);
   // engine.UpdateCollisionCandidates({});
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {id, RigidTransformd::Identity()}};
@@ -99,15 +125,22 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
   GeometryId idB = GeometryId::get_new_id();
   auto geometryA = MakeSimpleSoftGeometry();
   auto geometryB = MakeSimpleSoftGeometry();
-  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
-      {idA, geometryA}, {idB, geometryB}};
-  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+
   // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB)});
   // Move meshes along Z so that they just intersect
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {idA, RigidTransformd(Vector3d{0, 0, 0})},
       {idB, RigidTransformd(Vector3d{0, 0, 1.1})}};
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(geometryA, X_WGs[idA]));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(geometryB, X_WGs[idB]));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {idA, geometryA}, {idB, geometryB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{{idA, minA},
+                                                              {idB, minB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{{idA, maxA},
+                                                              {idB, maxB}};
+  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
+      soft_geometries, total_lower, total_upper);
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks - This should be 4 + 0 = 4
@@ -187,20 +220,29 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
   GeometryId idA = GeometryId::get_new_id();
   GeometryId idB = GeometryId::get_new_id();
   GeometryId idC = GeometryId::get_new_id();
-  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
-      {idA, MakeSimpleSoftGeometry()},
-      {idB, MakeSimpleSoftGeometry()},
-      {idC, MakeSimpleSoftGeometry()}};
-  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
-  // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB),
-  //                                   SortedPair<GeometryId>(idA, idC),
-  //                                   SortedPair<GeometryId>(idB, idC)});
-  // Move meshes along Z so that they just intersect
+  auto geometryA = MakeSimpleSoftGeometry();
+  auto geometryB = MakeSimpleSoftGeometry();
+  auto geometryC = MakeSimpleSoftGeometry();
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {idA, RigidTransformd(Vector3d{0, 0, 0})},
       {idB, RigidTransformd(Vector3d{0, 0, 1.1})},
       {idC, RigidTransformd(Vector3d{0, 0, 2.2})}};
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(geometryA, X_WGs[idA]));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(geometryB, X_WGs[idB]));
+  auto [minC, maxC] = ComputeTotalBounds(TransformMesh(geometryC, X_WGs[idC]));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {idA, geometryA}, {idB, geometryB}, {idC, geometryC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {idA, minA}, {idB, minB}, {idC, minC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {idA, maxA}, {idB, maxB}, {idC, maxC}};
+  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
+      soft_geometries, total_lower, total_upper);
+  // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB),
+  //                                   SortedPair<GeometryId>(idA, idC),
+  //                                   SortedPair<GeometryId>(idB, idC)});
+  // Move meshes along Z so that they just intersect
+
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks
@@ -269,19 +311,29 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
   GeometryId idB = GeometryId::get_new_id();
   GeometryId idC = GeometryId::get_new_id();
   GeometryId idD = GeometryId::get_new_id();
-  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
-      {idA, MakeSimpleSoftGeometry()},
-      {idB, MakeSimpleSoftGeometry()},
-      {idC, MakeSimpleSoftGeometry()},
-      {idD, MakeSimpleSoftGeometry()}};
-  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+  auto geometryA = MakeSimpleSoftGeometry();
+  auto geometryB = MakeSimpleSoftGeometry();
+  auto geometryC = MakeSimpleSoftGeometry();
+  auto geometryD = MakeSimpleSoftGeometry();
   // Move meshes along Z so that they just intersect
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {idA, RigidTransformd(Vector3d{0, 0, 0})},
       {idB, RigidTransformd(Vector3d{0, 0, 1.1})},
       {idC, RigidTransformd(Vector3d{0, 0, 2.2})},
       {idD, RigidTransformd(Vector3d{0, 0, 3.3})}};
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(geometryA, X_WGs[idA]));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(geometryB, X_WGs[idB]));
+  auto [minC, maxC] = ComputeTotalBounds(TransformMesh(geometryC, X_WGs[idC]));
+  auto [minD, maxD] = ComputeTotalBounds(TransformMesh(geometryD, X_WGs[idD]));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {idA, geometryA}, {idB, geometryB}, {idC, geometryC}, {idD, geometryD}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {idA, minA}, {idB, minB}, {idC, minC}, {idD, minD}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {idA, maxA}, {idB, maxB}, {idC, maxC}, {idD, maxD}};
+  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
+      soft_geometries, total_lower, total_upper);
+
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks
@@ -374,14 +426,19 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
     expected_filter[i] = 1;
   }
 
-  // Create soft geometries
-  const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>
-      soft_geometries{{sphereA_id, soft_geometryA},
-                      {sphereB_id, soft_geometryB}};
+  // Create inputs to SyclProximityEngine
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(soft_geometryB, X_WB));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {sphereA_id, soft_geometryA}, {sphereB_id, soft_geometryB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {sphereA_id, minA}, {sphereB_id, minB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {sphereA_id, maxA}, {sphereB_id, maxB}};
 
   // Instantiate SyclProximityEngine to obtain collision filter
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+      soft_geometries, total_lower, total_upper);
 
   // Update collision candidates
   // engine.UpdateCollisionCandidates(
@@ -405,8 +462,8 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
 
   // Due to numerical tolerances in the CPU BVH leaf overlap test, there will
   // be false positives in the cpu filter. Therefore, we check that the sycl
-  // filter is a subset of the cpu filter. Later on, we will verify that the cpu
-  // narrow phase filters these out using true geometric quantites.
+  // filter is a subset of the cpu filter. Later on, we will verify that the
+  // cpu narrow phase filters these out using true geometric quantites.
   std::vector<int> mismatch_indices;
   for (int i = 0; i < ssize(expected_filter); ++i) {
     EXPECT_LE(collision_filter[i], expected_filter[i]);
@@ -453,8 +510,8 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
                             soft_geometryB.mesh().element(eB).vertex(2)),
                  X_WB * soft_geometryB.mesh().vertex(
                             soft_geometryB.mesh().element(eB).vertex(3)));
-    // Compute the bounds of the intersection of the Aabbs. The intersection is
-    // empty if at least one of the dimensions has negative width.
+    // Compute the bounds of the intersection of the Aabbs. The intersection
+    // is empty if at least one of the dimensions has negative width.
     const Vector3d intersection_min = minA.cwiseMax(minB);
     const Vector3d intersection_max = maxA.cwiseMin(maxB);
     const Vector3d intersection_widths = intersection_max - intersection_min;
@@ -524,8 +581,8 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
   for (int i = 0; i < contact_surface->num_faces(); ++i) {
     const double expected_area = contact_surface->area(i);
     const Vector3d expected_centroid_M = contact_surface->element_centroid(i);
-    // Transform by transforms of A since the contact surface is posed in frame
-    // A.
+    // Transform by transforms of A since the contact surface is posed in
+    // frame A.
     const Vector3d expected_normal_M = contact_surface->face_normal(i);
 
     const Vector3d expected_centroid_W = X_WA * expected_centroid_M;
@@ -805,15 +862,20 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
     expected_filter[i] = 1;
   }
 
-  // Create soft geometries
-  const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>
-      soft_geometries{{sphereA_id, soft_geometryA},
-                      {sphereB_id, soft_geometryB},
-                      {sphereC_id, soft_geometryC}};
-
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(soft_geometryB, X_WB));
+  auto [minC, maxC] = ComputeTotalBounds(TransformMesh(soft_geometryC, X_WC));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {sphereA_id, soft_geometryA},
+      {sphereB_id, soft_geometryB},
+      {sphereC_id, soft_geometryC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {sphereA_id, minA}, {sphereB_id, minB}, {sphereC_id, minC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {sphereA_id, maxA}, {sphereB_id, maxB}, {sphereC_id, maxC}};
   // Instantiate SyclProximityEngine to obtain collision filter
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+      soft_geometries, total_lower, total_upper);
 
   // Update collision candidates
   // engine.UpdateCollisionCandidates(
@@ -1185,16 +1247,29 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
     expected_filter[i] = 1;
   }
 
-  // Create soft geometries
-  const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>
-      soft_geometries{{sphereA_id, soft_geometryA},
-                      {sphereB_id, soft_geometryB},
-                      {sphereC_id, soft_geometryC},
-                      {sphereD_id, soft_geometryD}};
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(soft_geometryB, X_WB));
+  auto [minC, maxC] = ComputeTotalBounds(TransformMesh(soft_geometryC, X_WC));
+  auto [minD, maxD] = ComputeTotalBounds(TransformMesh(soft_geometryD, X_WD));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {sphereA_id, soft_geometryA},
+      {sphereB_id, soft_geometryB},
+      {sphereC_id, soft_geometryC},
+      {sphereD_id, soft_geometryD}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {sphereA_id, minA},
+      {sphereB_id, minB},
+      {sphereC_id, minC},
+      {sphereD_id, minD}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {sphereA_id, maxA},
+      {sphereB_id, maxB},
+      {sphereC_id, maxC},
+      {sphereD_id, maxD}};
 
   // Instantiate SyclProximityEngine to obtain collision filter
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
-      soft_geometries);
+      soft_geometries, total_lower, total_upper);
 
   // Move spheres closer so that they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{

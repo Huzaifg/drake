@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "geometry/proximity/sycl/bvh/sycl_bvh.h"
 #include <oneapi/dpl/execution>  // For execution policies
 #include <oneapi/dpl/numeric>    // For exclusive_scan
 #include <sycl/sycl.hpp>
@@ -60,7 +61,9 @@ class SyclProximityEngine::Impl {
 
   // Constructor that initializes with soft geometries
   Impl(const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>&
-           soft_geometries)
+           soft_geometries,
+       const std::unordered_map<GeometryId, Vector3<double>>& total_lower_map,
+       const std::unordered_map<GeometryId, Vector3<double>>& total_upper_map)
       : q_device_(InitializeQueue()), mem_mgr_(q_device_), timing_logger_() {
     DRAKE_THROW_UNLESS(soft_geometries.size() > 0);
 
@@ -76,13 +79,26 @@ class SyclProximityEngine::Impl {
     }
     std::sort(sorted_ids.begin(), sorted_ids.end());
 
+    sorted_total_lower_.reserve(sorted_ids.size());
+    sorted_total_upper_.reserve(sorted_ids.size());
+
+    for (const auto& id : sorted_ids) {
+      sorted_total_lower_.push_back(total_lower_map.at(id));
+      sorted_total_upper_.push_back(total_upper_map.at(id));
+    }
+
     // Get number of geometries
     num_geometries_ = soft_geometries.size();
 
     SyclMemoryHelper::AllocateMeshMemory(mem_mgr_, mesh_data_, num_geometries_);
+    SyclMemoryHelper::AllocateBVHPerMeshMemory(mem_mgr_, bvh_data_,
+                                               num_geometries_);
+    bvh_data_.num_meshes = num_geometries_;
+
     // First compute totals and build lookup data
     total_elements_ = 0;
     total_vertices_ = 0;
+    total_nodes_ = 0;
 
     // Use the sorted IDs to ensure deterministic ordering
     for (uint32_t id_index = 0; id_index < sorted_ids.size(); ++id_index) {
@@ -97,19 +113,33 @@ class SyclProximityEngine::Impl {
       // Store offsets and counts directly (no memcpy needed with shared memory)
       mesh_data_.element_offsets[id_index] = total_elements_;
       mesh_data_.vertex_offsets[id_index] = total_vertices_;
+      bvh_data_.node_offsets[id_index] = total_nodes_;
 
       const uint32_t num_elements = mesh.num_elements();
       const uint32_t num_vertices = mesh.num_vertices();
       mesh_data_.element_counts[id_index] = num_elements;
       mesh_data_.vertex_counts[id_index] = num_vertices;
+      bvh_data_.node_counts_per_mesh[id_index] = 2 * num_elements - 1;
+      bvh_data_.bvhAll[id_index].max_nodes = 2 * num_elements - 1;
 
       // Update totals
       total_elements_ += num_elements;
       total_vertices_ += num_vertices;
+      total_nodes_ += 2 * num_elements - 1;
     }
+
+    // TODO (Huzaifa) - Just use this everywhere and remove total_elements_ and
+    // total_vertices_ from SyclProximityEngine::Impl
+    mesh_data_.total_elements = total_elements_;
+    mesh_data_.total_vertices = total_vertices_;
+    bvh_data_.total_nodes = total_nodes_;
 
     SyclMemoryHelper::AllocateMeshElementVerticesMemory(
         mem_mgr_, mesh_data_, total_elements_, total_vertices_);
+    bvh_data_.indicesAll = mem_mgr_.AllocateDevice<uint32_t>(total_elements_);
+    bvh_data_.node_mesh_ids = mem_mgr_.AllocateDevice<uint32_t>(total_nodes_);
+    SyclMemoryHelper::AllocateBVHTempMemory(mem_mgr_, bvh_data_,
+                                            total_elements_);
 
     // Copy data for each mesh
     std::vector<sycl::event> transfer_events;  // Store all transfer events
@@ -125,8 +155,10 @@ class SyclProximityEngine::Impl {
 
       // Direct access to shared memory values
       uint32_t element_offset = mesh_data_.element_offsets[id_index];
+      uint32_t node_offset = bvh_data_.node_offsets[id_index];
       uint32_t vertex_offset = mesh_data_.vertex_offsets[id_index];
       uint32_t num_elements = mesh_data_.element_counts[id_index];
+      uint32_t num_nodes = bvh_data_.node_counts_per_mesh[id_index];
       uint32_t num_vertices = mesh_data_.vertex_counts[id_index];
 
       const auto& mesh_elements = mesh.tetrahedra();
@@ -142,6 +174,9 @@ class SyclProximityEngine::Impl {
       q_device_
           .fill(mesh_data_.element_mesh_ids + element_offset, id_index,
                 num_elements)
+          .wait();
+
+      q_device_.fill(bvh_data_.node_mesh_ids + node_offset, id_index, num_nodes)
           .wait();
 
       // Vertices
@@ -294,6 +329,7 @@ class SyclProximityEngine::Impl {
       SyclMemoryHelper::FreeCollisionMemory(mem_mgr_, collision_data_);
       SyclMemoryHelper::FreeFullPolygonMemory(mem_mgr_, polygon_data_);
       SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
+      SyclMemoryHelper::FreeBVHNonTempMemory(mem_mgr_, bvh_data_);
     }
   }
 
@@ -333,6 +369,9 @@ class SyclProximityEngine::Impl {
     if (total_checks_ == 0) {
       return {};
     }
+
+    // Build the BVH for each mesh with the untransformed
+
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.StartKernel("unpack_transforms");
 #endif
@@ -342,9 +381,6 @@ class SyclProximityEngine::Impl {
     // Get transfomers in host
     for (uint32_t geom_index = 0; geom_index < num_geometries_; ++geom_index) {
       GeometryId geometry_id = mesh_data_.geometry_ids[geom_index];
-      // To maintain our orders of geometries we need to loop through the stored
-      // geometry id's and query the X_WGs for that geometry id. Cannot iterate
-      // over the unordered_map because it is not ordered
       const auto& X_WG = X_WGs.at(geometry_id);
       const auto& transform = X_WG.GetAsMatrix34();
 #pragma unroll
@@ -377,7 +413,7 @@ class SyclProximityEngine::Impl {
            vertices_W = mesh_data_.vertices_W,
            vertex_mesh_ids = mesh_data_.vertex_mesh_ids,
            transforms = mesh_data_.transforms,
-           total_vertices_ = total_vertices_]
+           total_vertices_ = total_vertices_] [[intel::kernel_args_restrict]]
 #ifdef __NVPTX__
           [[sycl::reqd_work_group_size(64)]]
 #endif
@@ -418,7 +454,8 @@ class SyclProximityEngine::Impl {
                inward_normals_W = mesh_data_.inward_normals_W,
                element_mesh_ids = mesh_data_.element_mesh_ids,
                transforms = mesh_data_.transforms,
-               total_elements_ = total_elements_]
+               total_elements_ =
+                   total_elements_] [[intel::kernel_args_restrict]]
 #ifdef __NVPTX__
               [[sycl::reqd_work_group_size(256)]]
 #endif
@@ -452,68 +489,139 @@ class SyclProximityEngine::Impl {
         });
 
     // Transform pressure gradients
-    auto transform_elem_quantities_event2 =
-        q_device_.submit([&](sycl::handler& h) {
-          const uint32_t work_group_size = 256;
-          const uint32_t global_elements =
-              RoundUpToWorkGroupSize(total_elements_, work_group_size);
-          h.parallel_for<TransformPressureGradientsKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_elements),
-                                sycl::range<1>(work_group_size)),
-              [=,
-               gradient_M_pressure_at_Mo = mesh_data_.gradient_M_pressure_at_Mo,
-               gradient_W_pressure_at_Wo = mesh_data_.gradient_W_pressure_at_Wo,
-               element_mesh_ids = mesh_data_.element_mesh_ids,
-               transforms = mesh_data_.transforms,
-               total_elements_ = total_elements_]
+    auto transform_elem_quantities_event2 = q_device_.submit([&](sycl::handler&
+                                                                     h) {
+      const uint32_t work_group_size = 256;
+      const uint32_t global_elements =
+          RoundUpToWorkGroupSize(total_elements_, work_group_size);
+      h.parallel_for<TransformPressureGradientsKernel>(
+          sycl::nd_range<1>(sycl::range<1>(global_elements),
+                            sycl::range<1>(work_group_size)),
+          [=, gradient_M_pressure_at_Mo = mesh_data_.gradient_M_pressure_at_Mo,
+           gradient_W_pressure_at_Wo = mesh_data_.gradient_W_pressure_at_Wo,
+           element_mesh_ids = mesh_data_.element_mesh_ids,
+           transforms = mesh_data_.transforms,
+           total_elements_ = total_elements_] [[intel::kernel_args_restrict]]
 #ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(256)]]
+          [[sycl::reqd_work_group_size(256)]]
 #endif
-              (sycl::nd_item<1> item) {
-                const uint32_t element_index = item.get_global_id(0);
-                if (element_index >= total_elements_) return;
+          (sycl::nd_item<1> item) {
+            const uint32_t element_index = item.get_global_id(0);
+            if (element_index >= total_elements_) return;
 
-                const uint32_t mesh_index = element_mesh_ids[element_index];
+            const uint32_t mesh_index = element_mesh_ids[element_index];
 
-                double T[12];
+            double T[12];
 #pragma unroll
-                for (uint32_t i = 0; i < 12; ++i) {
-                  T[i] = transforms[mesh_index * 12 + i];
-                }
-                // Each element has 1 pressure gradient
-                const double gp_mx =
-                    gradient_M_pressure_at_Mo[element_index][0];
-                const double gp_my =
-                    gradient_M_pressure_at_Mo[element_index][1];
-                const double gp_mz =
-                    gradient_M_pressure_at_Mo[element_index][2];
-                const double p_mo = gradient_M_pressure_at_Mo[element_index][3];
+            for (uint32_t i = 0; i < 12; ++i) {
+              T[i] = transforms[mesh_index * 12 + i];
+            }
+            // Each element has 1 pressure gradient
+            const double gp_mx = gradient_M_pressure_at_Mo[element_index][0];
+            const double gp_my = gradient_M_pressure_at_Mo[element_index][1];
+            const double gp_mz = gradient_M_pressure_at_Mo[element_index][2];
+            const double p_mo = gradient_M_pressure_at_Mo[element_index][3];
 
-                // Only rotation for the gradient pressures
-                const double gp_wx = T[0] * gp_mx + T[1] * gp_my + T[2] * gp_mz;
-                const double gp_wy = T[4] * gp_mx + T[5] * gp_my + T[6] * gp_mz;
-                const double gp_wz =
-                    T[8] * gp_mx + T[9] * gp_my + T[10] * gp_mz;
+            // Only rotation for the gradient pressures
+            const double gp_wx = T[0] * gp_mx + T[1] * gp_my + T[2] * gp_mz;
+            const double gp_wy = T[4] * gp_mx + T[5] * gp_my + T[6] * gp_mz;
+            const double gp_wz = T[8] * gp_mx + T[9] * gp_my + T[10] * gp_mz;
 
-                // TODO(huzaifa): Check this computation
-                // By equating the rotated pressure field with the original
-                // pressure field, we can solve for the pressure at the origin
-                // of the world frame
-                const double p_wo =
-                    p_mo - (gp_wx * T[3] + gp_wy * T[7] + gp_wz * T[11]);
-                gradient_W_pressure_at_Wo[element_index][0] = gp_wx;
-                gradient_W_pressure_at_Wo[element_index][1] = gp_wy;
-                gradient_W_pressure_at_Wo[element_index][2] = gp_wz;
-                gradient_W_pressure_at_Wo[element_index][3] = p_wo;
-              });
-        });
+            // TODO(huzaifa): Check this computation
+            // By equating the rotated pressure field with the original
+            // pressure field, we can solve for the pressure at the origin
+            // of the world frame
+            const double p_wo =
+                p_mo - (gp_wx * T[3] + gp_wy * T[7] + gp_wz * T[11]);
+            gradient_W_pressure_at_Wo[element_index][0] = gp_wx;
+            gradient_W_pressure_at_Wo[element_index][1] = gp_wy;
+            gradient_W_pressure_at_Wo[element_index][2] = gp_wz;
+            gradient_W_pressure_at_Wo[element_index][3] = p_wo;
+          });
+    });
+
+    // Compute AABBs of all the elements in all the meshes
+    auto element_aabb_event = q_device_.submit([&](sycl::handler& h) {
+      h.depends_on(transform_vertices_event);
+      const uint32_t work_group_size = 256;
+      const uint32_t global_elements =
+          RoundUpToWorkGroupSize(total_elements_, work_group_size);
+
+      h.parallel_for<ComputeElementAABBKernel>(
+          sycl::nd_range<1>(sycl::range<1>(global_elements),
+                            sycl::range<1>(work_group_size)),
+          [=, elements = mesh_data_.elements,
+           vertices_W = mesh_data_.vertices_W,
+           element_mesh_ids = mesh_data_.element_mesh_ids,
+           element_aabb_min_W = mesh_data_.element_aabb_min_W,
+           element_aabb_max_W = mesh_data_.element_aabb_max_W,
+           vertex_offsets = mesh_data_.vertex_offsets,
+           total_elements_ = total_elements_] [[intel::kernel_args_restrict]]
+
+#ifdef __NVPTX__
+          [[sycl::reqd_work_group_size(256)]]
+#endif
+          (sycl::nd_item<1> item) {
+            const uint32_t element_index = item.get_global_id(0);
+            if (element_index >= total_elements_) return;
+
+            const uint32_t geom_index = element_mesh_ids[element_index];
+            // Get the four vertex indices for this tetrahedron
+            const std::array<int, 4>& tet_vertices = elements[element_index];
+            const uint32_t vertex_mesh_offset = vertex_offsets[geom_index];
+
+            // Initialize min/max to first vertex
+            double min_x = vertices_W[vertex_mesh_offset + tet_vertices[0]][0];
+            double min_y = vertices_W[vertex_mesh_offset + tet_vertices[0]][1];
+            double min_z = vertices_W[vertex_mesh_offset + tet_vertices[0]][2];
+
+            double max_x = min_x;
+            double max_y = min_y;
+            double max_z = min_z;
+
+            // Find min/max across all four vertices
+            for (int i = 1; i < 4; ++i) {
+              const uint32_t vertex_idx = vertex_mesh_offset + tet_vertices[i];
+
+              // Update min coordinates
+              min_x = sycl::min(min_x, vertices_W[vertex_idx][0]);
+              min_y = sycl::min(min_y, vertices_W[vertex_idx][1]);
+              min_z = sycl::min(min_z, vertices_W[vertex_idx][2]);
+
+              // Update max coordinates
+              max_x = sycl::max(max_x, vertices_W[vertex_idx][0]);
+              max_y = sycl::max(max_y, vertices_W[vertex_idx][1]);
+              max_z = sycl::max(max_z, vertices_W[vertex_idx][2]);
+            }
+
+            // Store the results
+            element_aabb_min_W[element_index][0] = min_x;
+            element_aabb_min_W[element_index][1] = min_y;
+            element_aabb_min_W[element_index][2] = min_z;
+
+            element_aabb_max_W[element_index][0] = max_x;
+            element_aabb_max_W[element_index][1] = max_y;
+            element_aabb_max_W[element_index][2] = max_z;
+          });
+    });
+    if (!bvh_broad_phase_.IsBVHBuilt()) {
+      // Build BVH if not built
+      bvh_broad_phase_.build(mesh_data_, sorted_total_lower_,
+                             sorted_total_upper_, bvh_data_, element_aabb_event,
+                             mem_mgr_, q_device_);
+    }
+
+    // auto bvh_broad_phase_event = bvh_broad_phase_.BroadPhase(
+    //     mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
+    //     element_aabb_event, mem_mgr_, q_device_);
+    // bvh_broad_phase_event.wait_and_throw();
 
     // =========================================
     // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
     // =========================================
-    auto [element_aabb_event, generate_collision_filterevent] = NaiveBroadPhase(
+    auto generate_collision_filterevent = NaiveBroadPhase(
         q_device_, mesh_data_, collision_data_, total_elements_, total_checks_,
-        transform_vertices_event, collision_filtermemset_event);
+        element_aabb_event, collision_filtermemset_event);
     generate_collision_filterevent.wait();
 
     // =========================================
@@ -833,8 +941,10 @@ class SyclProximityEngine::Impl {
 
   SyclMemoryManager mem_mgr_;
   DeviceMeshData mesh_data_;
+  DeviceBVHData bvh_data_;
   DeviceCollisionData collision_data_;
   DevicePolygonData polygon_data_;
+  BVHBroadPhase bvh_broad_phase_;
 
   // Timing logger for kernel performance analysis
   SyclTimingLogger timing_logger_;
@@ -842,11 +952,15 @@ class SyclProximityEngine::Impl {
   // The collision candidates.
   std::vector<SortedPair<GeometryId>> collision_candidates_;
 
+  std::vector<Vector3<double>> sorted_total_lower_;
+  std::vector<Vector3<double>> sorted_total_upper_;
+
   // Number of geometries
   uint32_t num_geometries_ = 0;
 
   uint32_t total_vertices_ = 0;
   uint32_t total_elements_ = 0;
+  uint32_t total_nodes_ = 0;
 
   uint32_t current_polygon_areas_size_ =
       0;  // Current size of polygon_areas to prevent constant reallocation
@@ -885,8 +999,11 @@ bool SyclProximityEngine::is_available() {
 
 SyclProximityEngine::SyclProximityEngine(
     const std::unordered_map<GeometryId, hydroelastic::SoftGeometry>&
-        soft_geometries)
-    : impl_(std::make_unique<Impl>(soft_geometries)) {}
+        soft_geometries,
+    const std::unordered_map<GeometryId, Vector3<double>>& total_lower,
+    const std::unordered_map<GeometryId, Vector3<double>>& total_upper)
+    : impl_(std::make_unique<Impl>(soft_geometries, total_lower, total_upper)) {
+}
 
 SyclProximityEngine::SyclProximityEngine() : impl_(std::make_unique<Impl>()) {}
 
