@@ -536,7 +536,7 @@ void BVHBroadPhase::build(
               bvh_data.bvhAll[mesh_id].node_lowers[local_node_index].b =
                   1;  // Make leaf
               // Set leaf ranges
-              bvh_data.bvhAll[mesh_id].node_uppers[local_node_index].i = left;
+              bvh_data.bvhAll[mesh_id].node_lowers[local_node_index].i = left;
               bvh_data.bvhAll[mesh_id].node_uppers[local_node_index].i = right;
             }
           }

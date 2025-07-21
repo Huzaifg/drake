@@ -24,6 +24,7 @@
 #include "drake/geometry/proximity/hydroelastic_internal.h"
 #include "drake/geometry/proximity/make_sphere_field.h"
 #include "drake/geometry/proximity/make_sphere_mesh.h"
+#include "drake/geometry/proximity/sycl/bvh/sycl_bvh.h"
 #include "drake/geometry/proximity/sycl/sycl_hydroelastic_surface.h"
 #include "drake/geometry/proximity/sycl/sycl_proximity_engine.h"
 #include "drake/math/rigid_transform.h"
@@ -1300,6 +1301,217 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
     if (collision_filter[i] < expected_filter[i]) {
       mismatch_indices.push_back(i);
     }
+  }
+}
+
+// Helper to check BVH properties for a given mesh in the SYCL engine.
+std::tuple<int, int, int, double, bool> CheckSyclBvhProperties(
+    const SyclBvhAttorney::HostBVH& host_bvh, const std::string& filepath) {
+  const int height = SyclBvhAttorney::ComputeHeight(host_bvh);
+  const int num_leaves = SyclBvhAttorney::CountLeaves(host_bvh);
+  const int balance_factor = SyclBvhAttorney::ComputeBalanceFactor(host_bvh);
+  const double average_depth =
+      SyclBvhAttorney::ComputeAverageLeafDepth(host_bvh);
+  const bool bounds_valid = SyclBvhAttorney::VerifyBounds(host_bvh);
+  SyclBvhAttorney::ComputeAndPrintImbalanceHistogram(host_bvh, filepath);
+  EXPECT_EQ(bounds_valid, true);
+
+  return {height, num_leaves, balance_factor, average_depth, bounds_valid};
+}
+// Tests the efficiency and correctness of the BVH trees constructed by the SYCL
+// proximity engine
+GTEST_TEST(SPEBvhTest, TwoSpheresTreeStats) {
+  constexpr double radiusA = 1.0;
+  constexpr double resolution_hintA = 0.2 * radiusA;
+  constexpr double radiusB = 0.5;
+  constexpr double resolution_hintB = 0.5 * radiusB;
+  constexpr double hydroelastic_modulus = 1e+7;
+
+  // Sphere A
+  const Sphere sphereA(radiusA);
+  auto meshA =
+      std::make_unique<VolumeMesh<double>>(MakeSphereVolumeMesh<double>(
+          sphereA, resolution_hintA,
+          TessellationStrategy::kDenseInteriorVertices));
+  auto pressureA = std::make_unique<VolumeMeshFieldLinear<double, double>>(
+      MakeSpherePressureField(sphereA, meshA.get(), hydroelastic_modulus));
+  const Bvh<Aabb, VolumeMesh<double>> bvhSphereA(*meshA);
+
+  const hydroelastic::SoftGeometry soft_geometryA(
+      hydroelastic::SoftMesh(std::move(meshA), std::move(pressureA)));
+  const GeometryId sphereA_id = GeometryId::get_new_id();
+
+  // Sphere B
+  const Sphere sphereB(radiusB);
+  auto meshB =
+      std::make_unique<VolumeMesh<double>>(MakeSphereVolumeMesh<double>(
+          sphereB, resolution_hintB,
+          TessellationStrategy::kDenseInteriorVertices));
+  auto pressureB = std::make_unique<VolumeMeshFieldLinear<double, double>>(
+      MakeSpherePressureField(sphereB, meshB.get(), hydroelastic_modulus));
+  const Bvh<Aabb, VolumeMesh<double>> bvhSphereB(*meshB);
+  const hydroelastic::SoftGeometry soft_geometryB(
+      hydroelastic::SoftMesh(std::move(meshB), std::move(pressureB)));
+  const GeometryId sphereB_id = GeometryId::get_new_id();
+
+  const int num_A = soft_geometryA.mesh().num_elements();
+  const int num_B = soft_geometryB.mesh().num_elements();
+  fmt::print("Number of elements in sphere A: {}, sphere B: {}\n", num_A,
+             num_B);
+
+  // Arbitrarily pose the spheres into a colliding configuration.
+  const RigidTransformd X_WA =
+      RigidTransformd(Vector3d{0.0 * radiusA, 0.0 * radiusA, 0.3 * radiusA});
+  const RigidTransformd X_WB =
+      RigidTransformd(Vector3d{1.0 * radiusB, 0.0 * radiusB, 0.3 * radiusB});
+  const RigidTransformd X_AB = X_WA.InvertAndCompose(X_WB);
+
+  // Create inputs to SyclProximityEngine
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(soft_geometryB, X_WB));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {sphereA_id, soft_geometryA}, {sphereB_id, soft_geometryB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {sphereA_id, minA}, {sphereB_id, minB}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {sphereA_id, maxA}, {sphereB_id, maxB}};
+
+  // Instantiate SyclProximityEngine to initialize memory for the GPU
+  // datastructures
+  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
+      soft_geometries, total_lower, total_upper);
+
+  // Move spheres closer so they collide
+  const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
+      {sphereA_id, X_WA}, {sphereB_id, X_WB}};
+  const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
+
+  // Extract Impl from the engine in order to get access to the private data
+  // members
+  const auto impl = SyclProximityEngineAttorney::get_impl(engine);
+  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
+  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
+  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
+  // Check BVH properties for both spheres using the helper
+  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+    const auto host_bvh =
+        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+    std::string filepath = fmt::format("histogram_{}.json", i);
+    const auto [height, num_leaves, balance_factor, average_depth,
+                bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
+    fmt::print(
+        "Mesh {}: height: {}, num_leaves: {}, balance_factor: {}, "
+        "average_depth: {}, bounds_valid: {}\n",
+        i, height, num_leaves, balance_factor, average_depth, bounds_valid);
+  }
+}
+
+GTEST_TEST(SPEBvhTest, ThreeSpheresTreeStats) {
+  constexpr double radiusA = 1.0;
+  constexpr double resolution_hintA = 0.2 * radiusA;
+  constexpr double radiusB = 0.5;
+  constexpr double resolution_hintB = 0.5 * radiusB;
+  constexpr double radiusC = 1.5;
+  constexpr double resolution_hintC = 0.1 * radiusC;
+  constexpr double hydroelastic_modulus = 1e+7;
+
+  // Sphere A
+  const Sphere sphereA(radiusA);
+  auto meshA =
+      std::make_unique<VolumeMesh<double>>(MakeSphereVolumeMesh<double>(
+          sphereA, resolution_hintA,
+          TessellationStrategy::kDenseInteriorVertices));
+  auto pressureA = std::make_unique<VolumeMeshFieldLinear<double, double>>(
+      MakeSpherePressureField(sphereA, meshA.get(), hydroelastic_modulus));
+  const Bvh<Aabb, VolumeMesh<double>> bvhSphereA(*meshA);
+
+  const hydroelastic::SoftGeometry soft_geometryA(
+      hydroelastic::SoftMesh(std::move(meshA), std::move(pressureA)));
+  const GeometryId sphereA_id = GeometryId::get_new_id();
+
+  // Sphere B
+  const Sphere sphereB(radiusB);
+  auto meshB =
+      std::make_unique<VolumeMesh<double>>(MakeSphereVolumeMesh<double>(
+          sphereB, resolution_hintB,
+          TessellationStrategy::kDenseInteriorVertices));
+  auto pressureB = std::make_unique<VolumeMeshFieldLinear<double, double>>(
+      MakeSpherePressureField(sphereB, meshB.get(), hydroelastic_modulus));
+  const Bvh<Aabb, VolumeMesh<double>> bvhSphereB(*meshB);
+  const hydroelastic::SoftGeometry soft_geometryB(
+      hydroelastic::SoftMesh(std::move(meshB), std::move(pressureB)));
+  const GeometryId sphereB_id = GeometryId::get_new_id();
+
+  // Sphere C
+  const Sphere sphereC(radiusC);
+  auto meshC =
+      std::make_unique<VolumeMesh<double>>(MakeSphereVolumeMesh<double>(
+          sphereC, resolution_hintC,
+          TessellationStrategy::kDenseInteriorVertices));
+  auto pressureC = std::make_unique<VolumeMeshFieldLinear<double, double>>(
+      MakeSpherePressureField(sphereC, meshC.get(), hydroelastic_modulus));
+  const Bvh<Aabb, VolumeMesh<double>> bvhSphereC(*meshC);
+  const hydroelastic::SoftGeometry soft_geometryC(
+      hydroelastic::SoftMesh(std::move(meshC), std::move(pressureC)));
+  const GeometryId sphereC_id = GeometryId::get_new_id();
+
+  const int num_A = soft_geometryA.mesh().num_elements();
+  const int num_B = soft_geometryB.mesh().num_elements();
+  const int num_C = soft_geometryC.mesh().num_elements();
+  fmt::print("Number of elements in sphere A: {}, sphere B: {}, sphere C: {}\n",
+             num_A, num_B, num_C);
+
+  // Arbitrarily pose the spheres into a colliding configuration.
+  const RigidTransformd X_WA =
+      RigidTransformd(Vector3d{0.0 * radiusA, 0.0 * radiusA, 0.3 * radiusA});
+  const RigidTransformd X_WB =
+      RigidTransformd(Vector3d{1.0 * radiusB, 0.0 * radiusB, 0.3 * radiusB});
+  const RigidTransformd X_WC =
+      RigidTransformd(Vector3d{0.0 * radiusC, 1.0 * radiusC, 0.3 * radiusC});
+  const RigidTransformd X_AB = X_WA.InvertAndCompose(X_WB);
+  const RigidTransformd X_AC = X_WA.InvertAndCompose(X_WC);
+  const RigidTransformd X_BC = X_WB.InvertAndCompose(X_WC);
+
+  // Create inputs to SyclProximityEngine
+  auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
+  auto [minB, maxB] = ComputeTotalBounds(TransformMesh(soft_geometryB, X_WB));
+  auto [minC, maxC] = ComputeTotalBounds(TransformMesh(soft_geometryC, X_WC));
+  std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries{
+      {sphereA_id, soft_geometryA},
+      {sphereB_id, soft_geometryB},
+      {sphereC_id, soft_geometryC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_lower{
+      {sphereA_id, minA}, {sphereB_id, minB}, {sphereC_id, minC}};
+  std::unordered_map<GeometryId, Vector3<double>> total_upper{
+      {sphereA_id, maxA}, {sphereB_id, maxB}, {sphereC_id, maxC}};
+
+  // Instantiate SyclProximityEngine to initialize memory for the GPU
+  // datastructures
+  drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
+      soft_geometries, total_lower, total_upper);
+
+  // Move spheres closer so they collide
+  const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
+      {sphereA_id, X_WA}, {sphereB_id, X_WB}, {sphereC_id, X_WC}};
+  const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
+
+  // Extract Impl from the engine in order to get access to the private data
+  // members
+  const auto impl = SyclProximityEngineAttorney::get_impl(engine);
+  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
+  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
+  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
+  // Check BVH properties for all three spheres using the helper
+  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+    const auto host_bvh =
+        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+    std::string filepath = fmt::format("histogram_{}.json", i);
+    const auto [height, num_leaves, balance_factor, average_depth,
+                bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
+    fmt::print(
+        "Mesh {}: height: {}, num_leaves: {}, balance_factor: {}, "
+        "average_depth: {}, bounds_valid: {}\n",
+        i, height, num_leaves, balance_factor, average_depth, bounds_valid);
   }
 }
 

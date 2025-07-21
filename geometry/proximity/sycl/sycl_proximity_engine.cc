@@ -24,7 +24,6 @@
 #include "drake/geometry/proximity/sycl/utils/sycl_contact_polygon.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_equilibrium_plane.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_hydroelastic_surface_creator.h"
-#include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_naive_broad_phase.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_tetrahedron_slicing.h"
 #include "drake/geometry/proximity/sycl/utils/sycl_timing_logger.h"
@@ -362,10 +361,6 @@ class SyclProximityEngine::Impl {
   std::vector<SYCLHydroelasticSurface> ComputeSYCLHydroelasticSurface(
       const std::unordered_map<GeometryId, math::RigidTransform<double>>&
           X_WGs) {
-    // // Performance analysis: Static counter for time steps
-    // static uint32_t time_step_counter = 0;
-    // ++time_step_counter;
-
     if (total_checks_ == 0) {
       return {};
     }
@@ -932,7 +927,6 @@ class SyclProximityEngine::Impl {
     }
   }
 
-  friend class SyclProximityEngineTester;
   // We have a CPU queue for operations beneficial to perform on the host
   // and a device queue for operations beneficial to perform on the
   // Accelerator. Note: q_device_ HAS TO BE declared before mem_mgr_ since
@@ -964,10 +958,6 @@ class SyclProximityEngine::Impl {
 
   uint32_t current_polygon_areas_size_ =
       0;  // Current size of polygon_areas to prevent constant reallocation
-
-  uint32_t current_narrow_phase_check_indices_size_ =
-      0;  // Current size of narrow_phase_check_indices to prevent constant
-          // reallocation
 
   uint32_t current_polygon_indices_size_ =
       0;  // Current size of valid_polygon_indices to prevent constant
@@ -1205,6 +1195,21 @@ std::vector<double> SyclProximityEngineAttorney::get_debug_polygon_vertices(
            impl->current_debug_polygon_vertices_size_ * sizeof(double))
       .wait();
   return debug_polygon_vertices_host;
+}
+
+DeviceBVHData SyclProximityEngineAttorney::get_bvh_data(
+    SyclProximityEngine::Impl* impl) {
+  return impl->bvh_data_;
+}
+
+SyclMemoryManager SyclProximityEngineAttorney::get_mem_mgr(
+    SyclProximityEngine::Impl* impl) {
+  return impl->mem_mgr_;
+}
+
+sycl::queue SyclProximityEngineAttorney::get_q_device(
+    SyclProximityEngine::Impl* impl) {
+  return impl->q_device_;
 }
 
 void SyclProximityEngineAttorney::PrintTimingStats(

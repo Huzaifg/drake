@@ -8,6 +8,7 @@
 #include "drake/geometry/geometry_ids.h"
 #include "drake/geometry/proximity/hydroelastic_internal.h"
 #include "drake/geometry/proximity/sycl/sycl_hydroelastic_surface.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
 #include "drake/math/rigid_transform.h"
 
 namespace drake {
@@ -78,7 +79,6 @@ class SyclProximityEngine {
   // The implementation class
   class Impl;
   std::unique_ptr<Impl> impl_;
-  friend class SyclProximityEngineTester;
   // Add attorney as friend
   friend class SyclProximityEngineAttorney;
 };
@@ -119,6 +119,10 @@ class SyclProximityEngineAttorney {
       SyclProximityEngine::Impl* impl);
   static std::vector<double> get_debug_polygon_vertices(
       SyclProximityEngine::Impl* impl);
+  // Required for testing the BVH
+  static DeviceBVHData get_bvh_data(SyclProximityEngine::Impl* impl);
+  static SyclMemoryManager get_mem_mgr(SyclProximityEngine::Impl* impl);
+  static sycl::queue get_q_device(SyclProximityEngine::Impl* impl);
 
   // Timing logger access
   static void PrintTimingStats(SyclProximityEngine::Impl* impl);
