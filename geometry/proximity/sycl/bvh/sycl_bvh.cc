@@ -30,6 +30,7 @@ class ComputeKeyDeltasKernel;
 class BuildLeavesKernel;
 class BuildTreeKernel;
 class PackLeavesKernel;
+class RefitKernel;
 
 void BVHBroadPhase::build(
     const DeviceMeshData& mesh_data,
@@ -201,17 +202,8 @@ void BVHBroadPhase::build(
     uint32_t this_geom_count = mesh_data.element_counts[mesh_id];
     uint32_t max_nodes = 2 * this_geom_count - 1;
     bvh_data.bvhAll[mesh_id].max_nodes = max_nodes;
-    bvh_data.bvhAll[mesh_id].node_lowers =
-        sycl::malloc_device<BVHPackedNodeHalf>(max_nodes, q_device);
-    bvh_data.bvhAll[mesh_id].node_uppers =
-        sycl::malloc_device<BVHPackedNodeHalf>(max_nodes, q_device);
-
-    // Allocate node_parents array for hierarchy traversal
-    bvh_data.bvhAll[mesh_id].node_parents =
-        sycl::malloc_device<int>(max_nodes, q_device);
-
-    // Allocate root pointer (points to a single int index)
-    bvh_data.bvhAll[mesh_id].root = sycl::malloc_device<int>(1, q_device);
+    SyclMemoryHelper::AllocateBVHSingleMeshMemory(
+        memory_manager, bvh_data.bvhAll[mesh_id], max_nodes);
 
     // Initialize parent arrays to -1 (no parent initially)
     q_device.fill(bvh_data.bvhAll[mesh_id].node_parents, -1, max_nodes);
@@ -219,14 +211,8 @@ void BVHBroadPhase::build(
   q_device.wait();
 
   // Initialize the global num_childrenAll array to 0 for atomic operations
-  // Calculate total_nodes from the mesh data (sum of all 2*element_count-1 for
-  // all meshes)
-  uint32_t total_nodes = 0;
-  for (int mesh_id = 0; mesh_id < num_geometries; ++mesh_id) {
-    total_nodes += 2 * mesh_data.element_counts[mesh_id] - 1;
-  }
   auto init_children_event =
-      memory_manager.Memset(bvh_data.num_childrenAll, total_nodes);
+      memory_manager.Memset(bvh_data.num_childrenAll, bvh_data.total_nodes);
   init_children_event.wait();
 
   // Build the leaves of the BVH
@@ -545,8 +531,181 @@ void BVHBroadPhase::build(
 
   q_device.wait();
 
-  SyclMemoryHelper::FreeBVHTempMemory(memory_manager, bvh_data);
+  SyclMemoryHelper::FreeBVHAllMeshTempMemory(memory_manager, bvh_data);
   bvh_built_ = true;
+}
+
+sycl::event BVHBroadPhase::refit(const DeviceMeshData& mesh_data,
+                                 DeviceBVHData& bvh_data,
+                                 sycl::event& element_aabb_event,
+                                 SyclMemoryManager& memory_manager,
+                                 sycl::queue& q_device) {
+  // Reinitialize the num_childrenAll array to 0 for atomic operations
+  auto init_children_event =
+      memory_manager.Memset(bvh_data.num_childrenAll, bvh_data.total_nodes);
+
+  // Reinitialize the indicesAll array to 0 for atomic operations
+  const uint32_t work_group_size = 1024;
+  const uint32_t global_elements =
+      RoundUpToWorkGroupSize(mesh_data.total_elements, work_group_size);
+  auto refit_event = q_device.submit([&](sycl::handler& h) {
+    h.depends_on({init_children_event, element_aabb_event});
+    h.parallel_for<RefitKernel>(
+        sycl::nd_range<1>(sycl::range<1>(global_elements),
+                          sycl::range<1>(work_group_size)),
+        [=, element_offsets = mesh_data.element_offsets,
+         element_aabb_min_W = mesh_data.element_aabb_min_W,
+         element_aabb_max_W = mesh_data.element_aabb_max_W,
+         indicesAll = bvh_data.indicesAll,
+         element_mesh_ids = mesh_data.element_mesh_ids,
+         bvhAll = bvh_data.bvhAll, num_childrenAll = bvh_data.num_childrenAll,
+         node_offsets = bvh_data.node_offsets] [[intel::kernel_args_restrict]] (
+            sycl::nd_item<1> item) {
+          uint32_t global_eI = item.get_global_id(0);
+          if (global_eI < mesh_data.total_elements) {
+            uint32_t mesh_id = element_mesh_ids[global_eI];
+            uint32_t global_element_offset = element_offsets[mesh_id];
+            uint32_t global_node_offset = node_offsets[mesh_id];
+            uint32_t local_element_index = global_eI - global_element_offset;
+            BVH& bvh = bvhAll[mesh_id];
+            bool is_leaf = bvh.node_lowers[local_element_index].b;
+            int parent = bvh.node_parents[local_element_index];
+
+            if (!is_leaf) {
+              return;
+            }
+            // Set new bounding boxes for the leaf
+            BVHPackedNodeHalf& lower = bvh.node_lowers[local_element_index];
+            BVHPackedNodeHalf& upper = bvh.node_uppers[local_element_index];
+
+            // Only set these new bounding boxes if the leaf is not a muted leaf
+            // (parent of leaf has not been made leaf in packing)
+            if (!bvh.node_lowers[parent].b) {
+              const uint32_t start = lower.i;
+              const uint32_t end = upper.i;
+              // Compute new AABB
+              Vector3<double> lower_W(std::numeric_limits<double>::max(),
+                                      std::numeric_limits<double>::max(),
+                                      std::numeric_limits<double>::max());
+              Vector3<double> upper_W(std::numeric_limits<double>::min(),
+                                      std::numeric_limits<double>::min(),
+                                      std::numeric_limits<double>::min());
+              for (uint32_t local_primitive_index = start;
+                   local_primitive_index < end; local_primitive_index++) {
+                uint32_t unsorted_local_primitive_index =
+                    indicesAll[local_primitive_index + global_element_offset];
+                Vector3<double> lower_W_i =
+                    element_aabb_min_W[unsorted_local_primitive_index +
+                                       global_element_offset];
+                Vector3<double> upper_W_i =
+                    element_aabb_max_W[unsorted_local_primitive_index +
+                                       global_element_offset];
+                lower_W = ComponentwiseMin(lower_W, lower_W_i);
+                upper_W = ComponentwiseMax(upper_W, upper_W_i);
+              }
+              // Set the new bounds for the leaf
+              lower.x = lower_W[0];
+              lower.y = lower_W[1];
+              lower.z = lower_W[2];
+              upper.x = upper_W[0];
+              upper.y = upper_W[1];
+              upper.z = upper_W[2];
+            }
+
+            // Now update hierarchy by moving upwards
+            while (parent != -1) {
+              uint32_t parent_global_index = global_node_offset + parent;
+              sycl::atomic_fence(sycl::memory_order::acq_rel,
+                                 sycl::memory_scope::device);
+              sycl::atomic_ref<uint32_t, sycl::memory_order::acq_rel,
+                               sycl::memory_scope::device>
+                  atomic_children(num_childrenAll[parent_global_index]);
+              int finished =
+                  atomic_children.fetch_add(1, sycl::memory_order::acq_rel);
+
+              if (finished == 1) {
+                BVHPackedNodeHalf& parent_lower = bvh.node_lowers[parent];
+                BVHPackedNodeHalf& parent_upper = bvh.node_uppers[parent];
+                if (parent_lower.b) {
+                  // a packed leaf node can still be a parent in LBVH, we need
+                  // to recompute its bounds since we've lost its left and right
+                  // child node index in the muting process
+                  int parent_parent = bvh.node_parents[parent];
+
+                  // Parent should also not a leaf, otherwise we are in muted
+                  // section
+                  if (parent_parent != -1 &&
+                      !bvh.node_lowers[parent_parent].b) {
+                    const uint32_t start = parent_lower.i;
+                    const uint32_t end = parent_upper.i;
+                    Vector3<double> lower_W(std::numeric_limits<double>::max(),
+                                            std::numeric_limits<double>::max(),
+                                            std::numeric_limits<double>::max());
+                    Vector3<double> upper_W(std::numeric_limits<double>::min(),
+                                            std::numeric_limits<double>::min(),
+                                            std::numeric_limits<double>::min());
+                    for (uint32_t local_primitive_index = start;
+                         local_primitive_index < end; local_primitive_index++) {
+                      uint32_t unsorted_local_primitive_index =
+                          indicesAll[local_primitive_index +
+                                     global_element_offset];
+                      Vector3<double> lower_W_i =
+                          element_aabb_min_W[unsorted_local_primitive_index +
+                                             global_element_offset];
+                      Vector3<double> upper_W_i =
+                          element_aabb_max_W[unsorted_local_primitive_index +
+                                             global_element_offset];
+                      lower_W = ComponentwiseMin(lower_W, lower_W_i);
+                      upper_W = ComponentwiseMax(upper_W, upper_W_i);
+                    }
+                    parent_lower.x = lower_W[0];
+                    parent_lower.y = lower_W[1];
+                    parent_lower.z = lower_W[2];
+                    parent_upper.x = upper_W[0];
+                    parent_upper.y = upper_W[1];
+                    parent_upper.z = upper_W[2];
+                  }
+                } else {
+                  // Parent is not a leaf so we recompute its bounds from its
+                  // left and right children
+                  const uint32_t left = parent_lower.i;
+                  const uint32_t right = parent_upper.i;
+
+                  Vector3<double> left_lower(bvh.node_lowers[left].x,
+                                             bvh.node_lowers[left].y,
+                                             bvh.node_lowers[left].z);
+                  Vector3<double> left_upper(bvh.node_uppers[left].x,
+                                             bvh.node_uppers[left].y,
+                                             bvh.node_uppers[left].z);
+                  Vector3<double> right_lower(bvh.node_lowers[right].x,
+                                              bvh.node_lowers[right].y,
+                                              bvh.node_lowers[right].z);
+                  Vector3<double> right_upper(bvh.node_uppers[right].x,
+                                              bvh.node_uppers[right].y,
+                                              bvh.node_uppers[right].z);
+                  Vector3<double> lower_W =
+                      ComponentwiseMin(left_lower, right_lower);
+                  Vector3<double> upper_W =
+                      ComponentwiseMax(left_upper, right_upper);
+
+                  // Set the new bounds for the parent
+                  parent_lower.x = lower_W[0];
+                  parent_lower.y = lower_W[1];
+                  parent_lower.z = lower_W[2];
+                  parent_upper.x = upper_W[0];
+                  parent_upper.y = upper_W[1];
+                  parent_upper.z = upper_W[2];
+                }
+                // Move up to process the parent
+                parent = bvh.node_parents[parent];
+              } else {
+                break;
+              }
+            }
+          }
+        });
+  });
+  return refit_event;
 }
 
 sycl::event BVHBroadPhase::BroadPhase(
@@ -555,7 +714,17 @@ sycl::event BVHBroadPhase::BroadPhase(
     const std::vector<Vector3<double>>& sorted_total_upper,
     DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
     SyclMemoryManager& memory_manager, sycl::queue& q_device) {
-  // TODO - Tree refit and traversal
+  // Run a refit with the new AABBs - If the BVH is just built, then we don't
+  // need to refit on the very first time step
+  // By default, we refit every single mesh every time step because otherwise
+  // the number of nodes will be too little for the GPU
+  // TODO(Huzaifa): Refit only colliding meshes and compare the performance
+  if (IsBVHRefitted()) {
+    auto refit_event = refit(mesh_data, bvh_data, element_aabb_event,
+                             memory_manager, q_device);
+  }
+  bvh_refitted_ = false;
+
   return sycl::event();
 }
 }  // namespace sycl_impl

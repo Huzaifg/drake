@@ -90,7 +90,7 @@ class SyclProximityEngine::Impl {
     num_geometries_ = soft_geometries.size();
 
     SyclMemoryHelper::AllocateMeshMemory(mem_mgr_, mesh_data_, num_geometries_);
-    SyclMemoryHelper::AllocateBVHPerMeshMemory(mem_mgr_, bvh_data_,
+    SyclMemoryHelper::AllocateBVHAllMeshMemory(mem_mgr_, bvh_data_,
                                                num_geometries_);
     bvh_data_.num_meshes = num_geometries_;
 
@@ -135,10 +135,9 @@ class SyclProximityEngine::Impl {
 
     SyclMemoryHelper::AllocateMeshElementVerticesMemory(
         mem_mgr_, mesh_data_, total_elements_, total_vertices_);
-    bvh_data_.indicesAll = mem_mgr_.AllocateDevice<uint32_t>(total_elements_);
-    bvh_data_.node_mesh_ids = mem_mgr_.AllocateDevice<uint32_t>(total_nodes_);
-    SyclMemoryHelper::AllocateBVHTempMemory(mem_mgr_, bvh_data_,
-                                            total_elements_);
+    SyclMemoryHelper::AllocateBVHAllMeshNodeCountsMemory(mem_mgr_, bvh_data_);
+    SyclMemoryHelper::AllocateBVHAllMeshTempMemory(mem_mgr_, bvh_data_,
+                                                   total_elements_);
 
     // Copy data for each mesh
     std::vector<sycl::event> transfer_events;  // Store all transfer events
@@ -328,7 +327,7 @@ class SyclProximityEngine::Impl {
       SyclMemoryHelper::FreeCollisionMemory(mem_mgr_, collision_data_);
       SyclMemoryHelper::FreeFullPolygonMemory(mem_mgr_, polygon_data_);
       SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
-      SyclMemoryHelper::FreeBVHNonTempMemory(mem_mgr_, bvh_data_);
+      SyclMemoryHelper::FreeBVHSingleMeshAndAllMeshMemory(mem_mgr_, bvh_data_);
     }
   }
 
@@ -606,10 +605,10 @@ class SyclProximityEngine::Impl {
                              mem_mgr_, q_device_);
     }
 
-    // auto bvh_broad_phase_event = bvh_broad_phase_.BroadPhase(
-    //     mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
-    //     element_aabb_event, mem_mgr_, q_device_);
-    // bvh_broad_phase_event.wait_and_throw();
+    auto bvh_broad_phase_event = bvh_broad_phase_.BroadPhase(
+        mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
+        element_aabb_event, mem_mgr_, q_device_);
+    bvh_broad_phase_event.wait_and_throw();
 
     // =========================================
     // Command group 2: Generate candidate tet pairs using NaiveBroadPhase

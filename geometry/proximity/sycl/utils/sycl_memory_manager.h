@@ -169,6 +169,8 @@ struct BVH {
 
   // used for fast refits
   int* node_parents;
+  // node_counts are the number of nodes that are children to each node in this
+  // BVH Not owned by the BVH, just points to num_childrenAll in DeviceBVHData
   int* node_counts;
   // reordered primitive indices corresponds to the ordering of leaf nodes
   // Not owned by the BVH, just points to indicesAll in DeviceBVHData
@@ -197,14 +199,16 @@ struct DeviceBVHData {
   BVH* bvhAll = nullptr;
   uint32_t* node_counts_per_mesh = nullptr;
   uint32_t* node_offsets = nullptr;
-  uint32_t* node_mesh_ids = nullptr;
-  Vector3<double>* total_lowerAll = nullptr;
-  Vector3<double>* total_upperAll = nullptr;
-  Vector3<double>* total_inv_edgesAll = nullptr;
   // This is modified in place to point to mesh local primitive index
   // If this is used again to get primitive AABBs from mesh_data, it needs the
   // mesh wise element offset added to it
   uint32_t* indicesAll = nullptr;
+  // Mesh ID corresponding to each node
+  uint32_t* node_mesh_ids = nullptr;
+  uint32_t* num_childrenAll = nullptr;
+  Vector3<double>* total_lowerAll = nullptr;
+  Vector3<double>* total_upperAll = nullptr;
+  Vector3<double>* total_inv_edgesAll = nullptr;
 
   // Temp data deleted after tree construction
   uint32_t* keysAll = nullptr;  // Morton keys of all elements
@@ -214,8 +218,6 @@ struct DeviceBVHData {
       nullptr;  // Each node stores the range of primitives it covers. This is
                 // the left limit of the range
   uint32_t* range_rightsAll = nullptr;  // This is the right limit of the range
-  uint32_t* num_childrenAll =
-      nullptr;  // This is the number of children of the node
   uint32_t num_meshes;
   uint32_t total_nodes;
 };
@@ -225,12 +227,24 @@ class SyclMemoryHelper {
   static void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
                                  DeviceMeshData& mesh_data,
                                  uint32_t num_geometries);
-  static void AllocateBVHPerMeshMemory(SyclMemoryManager& mem_mgr,
+  // Memory each BVH holds for itself
+  static void AllocateBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,
+                                          BVH& bvh_mesh, uint32_t max_nodes);
+  // Memory required to construct the BVH of all meshes
+  // Note 1: Some memory is temporary and can be freed after construction - this
+  // is allocated in the second function (AllocateBVHAllMeshTempMemory) Some
+  // memory is permanent and is referenced by the BVH - this is allocated in the
+  // first function Note 2: Some memory is node based and is allocated in
+  // AllocateBVHAllMeshNodeCountsMemory However all of the non temporary AllMesh
+  // memory is freed in FreeBVHSingleMeshAndAllMeshMemory
+  static void AllocateBVHAllMeshMemory(SyclMemoryManager& mem_mgr,
                                        DeviceBVHData& bvh_data,
                                        uint32_t num_geometries);
-  static void AllocateBVHTempMemory(SyclMemoryManager& mem_mgr,
-                                    DeviceBVHData& bvh_data,
-                                    uint32_t total_elements);
+  static void AllocateBVHAllMeshNodeCountsMemory(SyclMemoryManager& mem_mgr,
+                                                 DeviceBVHData& bvh_data);
+  static void AllocateBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
+                                           DeviceBVHData& bvh_data,
+                                           uint32_t total_elements);
   static void AllocateMeshElementVerticesMemory(SyclMemoryManager& mem_mgr,
                                                 DeviceMeshData& mesh_data,
                                                 uint32_t total_elements,
@@ -252,11 +266,10 @@ class SyclMemoryHelper {
                                            uint32_t num_geometries);
   static void FreeMeshMemory(SyclMemoryManager& mem_mgr,
                              DeviceMeshData& mesh_data);
-  static void FreeBVHMeshMemory(SyclMemoryManager& mem_mgr, BVH& bvh_mesh);
-  static void FreeBVHNonTempMemory(SyclMemoryManager& mem_mgr,
-                                   DeviceBVHData& bvh_data);
-  static void FreeBVHTempMemory(SyclMemoryManager& mem_mgr,
-                                DeviceBVHData& bvh_data);
+  static void FreeBVHSingleMeshAndAllMeshMemory(SyclMemoryManager& mem_mgr,
+                                                DeviceBVHData& bvh_data);
+  static void FreeBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
+                                       DeviceBVHData& bvh_data);
   static void FreeCollisionMemory(SyclMemoryManager& mem_mgr,
                                   DeviceCollisionData& collision_data);
   static void FreeNarrowPhaseChecksCollisionMemory(
@@ -267,6 +280,10 @@ class SyclMemoryHelper {
                                        DevicePolygonData& polygon_data);
   static void FreePolygonMemory(SyclMemoryManager& mem_mgr,
                                 DevicePolygonData& polygon_data);
+
+ private:
+  static void FreeBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,
+                                      BVH& bvh_mesh);
 };
 
 }  // namespace sycl_impl

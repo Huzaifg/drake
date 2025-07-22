@@ -22,7 +22,16 @@ void SyclMemoryHelper::AllocateMeshMemory(SyclMemoryManager& mem_mgr,
   mesh_data.transforms = mem_mgr.AllocateHost<double>(num_geometries * 12);
 }
 
-void SyclMemoryHelper::AllocateBVHPerMeshMemory(SyclMemoryManager& mem_mgr,
+void SyclMemoryHelper::AllocateBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,
+                                                   BVH& bvh_mesh,
+                                                   uint32_t max_nodes) {
+  bvh_mesh.node_lowers = mem_mgr.AllocateDevice<BVHPackedNodeHalf>(max_nodes);
+  bvh_mesh.node_uppers = mem_mgr.AllocateDevice<BVHPackedNodeHalf>(max_nodes);
+  bvh_mesh.node_parents = mem_mgr.AllocateDevice<int>(max_nodes);
+  bvh_mesh.root = mem_mgr.AllocateDevice<int>(1);
+}
+
+void SyclMemoryHelper::AllocateBVHAllMeshMemory(SyclMemoryManager& mem_mgr,
                                                 DeviceBVHData& bvh_data,
                                                 uint32_t num_geometries) {
   // The BVH counter data and pointers on Host but the data pointed to by BVH
@@ -39,17 +48,24 @@ void SyclMemoryHelper::AllocateBVHPerMeshMemory(SyclMemoryManager& mem_mgr,
       mem_mgr.AllocateDevice<Vector3<double>>(num_geometries);
 }
 
-void SyclMemoryHelper::AllocateBVHTempMemory(SyclMemoryManager& mem_mgr,
-                                             DeviceBVHData& bvh_data,
-                                             uint32_t total_elements) {
+void SyclMemoryHelper::AllocateBVHAllMeshNodeCountsMemory(
+    SyclMemoryManager& mem_mgr, DeviceBVHData& bvh_data) {
+  bvh_data.indicesAll = mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
+  bvh_data.node_mesh_ids =
+      mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
+  bvh_data.num_childrenAll =
+      mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
+}
+
+void SyclMemoryHelper::AllocateBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
+                                                    DeviceBVHData& bvh_data,
+                                                    uint32_t total_elements) {
   bvh_data.indicesAll = mem_mgr.AllocateDevice<uint32_t>(total_elements);
   bvh_data.keysAll = mem_mgr.AllocateDevice<uint32_t>(total_elements);
   bvh_data.deltasAll = mem_mgr.AllocateDevice<uint32_t>(total_elements);
   bvh_data.range_leftsAll =
       mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
   bvh_data.range_rightsAll =
-      mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
-  bvh_data.num_childrenAll =
       mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
 }
 
@@ -208,26 +224,32 @@ void SyclMemoryHelper::FreeMeshMemory(SyclMemoryManager& mem_mgr,
 }
 
 // Free individual BVH mesh memory
-void SyclMemoryHelper::FreeBVHMeshMemory(SyclMemoryManager& mem_mgr,
-                                         BVH& bvh_mesh) {
-  mem_mgr.Free(bvh_mesh.node_lowers);
-  mem_mgr.Free(bvh_mesh.node_uppers);
-  mem_mgr.Free(bvh_mesh.node_parents);
-  mem_mgr.Free(bvh_mesh.root);
-
-  // Reset pointers to null
+void SyclMemoryHelper::FreeBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,
+                                               BVH& bvh_mesh) {
+  if (bvh_mesh.node_lowers != nullptr) {
+    mem_mgr.Free(bvh_mesh.node_lowers);
+  }
+  if (bvh_mesh.node_uppers != nullptr) {
+    mem_mgr.Free(bvh_mesh.node_uppers);
+  }
+  if (bvh_mesh.node_parents != nullptr) {
+    mem_mgr.Free(bvh_mesh.node_parents);
+  }
+  if (bvh_mesh.root != nullptr) {
+    mem_mgr.Free(bvh_mesh.root);
+  }
   bvh_mesh.node_lowers = nullptr;
   bvh_mesh.node_uppers = nullptr;
   bvh_mesh.node_parents = nullptr;
   bvh_mesh.root = nullptr;
 }
-
-void SyclMemoryHelper::FreeBVHNonTempMemory(SyclMemoryManager& mem_mgr,
-                                            DeviceBVHData& bvh_data) {
+// Free all BVH memory
+void SyclMemoryHelper::FreeBVHSingleMeshAndAllMeshMemory(
+    SyclMemoryManager& mem_mgr, DeviceBVHData& bvh_data) {
   // Free per-mesh BVH node data first
   if (bvh_data.bvhAll != nullptr) {
     for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
-      FreeBVHMeshMemory(mem_mgr, bvh_data.bvhAll[i]);
+      FreeBVHSingleMeshMemory(mem_mgr, bvh_data.bvhAll[i]);
     }
   }
 
@@ -238,15 +260,16 @@ void SyclMemoryHelper::FreeBVHNonTempMemory(SyclMemoryManager& mem_mgr,
   mem_mgr.Free(bvh_data.total_upperAll);
   mem_mgr.Free(bvh_data.total_inv_edgesAll);
   mem_mgr.Free(bvh_data.indicesAll);
+  mem_mgr.Free(bvh_data.node_mesh_ids);
+  mem_mgr.Free(bvh_data.num_childrenAll);
 }
 
-void SyclMemoryHelper::FreeBVHTempMemory(SyclMemoryManager& mem_mgr,
-                                         DeviceBVHData& bvh_data) {
+void SyclMemoryHelper::FreeBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
+                                                DeviceBVHData& bvh_data) {
   mem_mgr.Free(bvh_data.keysAll);
   mem_mgr.Free(bvh_data.deltasAll);
   mem_mgr.Free(bvh_data.range_leftsAll);
   mem_mgr.Free(bvh_data.range_rightsAll);
-  mem_mgr.Free(bvh_data.num_childrenAll);
 }
 
 // Free collision memory

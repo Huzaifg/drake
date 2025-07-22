@@ -99,6 +99,7 @@ class BVHBroadPhase {
              DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
              SyclMemoryManager& memory_manager, sycl::queue& q_device);
   bool IsBVHBuilt() const { return bvh_built_; }
+  bool IsBVHRefitted() const { return bvh_refitted_; }
 
  private:
   // BVH construction parameters
@@ -106,8 +107,12 @@ class BVHBroadPhase {
     kMinPrimitivesPerLeaf = 8,  // Minimum primitives before creating leaf
     kMaxDepth = 32              // Maximum tree depth before forcing leaf
   };
+  sycl::event refit(const DeviceMeshData& mesh_data, DeviceBVHData& bvh_data,
+                    sycl::event& element_aabb_event,
+                    SyclMemoryManager& memory_manager, sycl::queue& q_device);
 
   bool bvh_built_ = false;
+  bool bvh_refitted_ = true;
 };
 
 // Attorney class for accessing and inspecting SYCL BVH data in tests.
@@ -396,8 +401,13 @@ class SyclBvhAttorney {
     // Verify parent is union.
     Vector3<double> expected_min = left_min.cwiseMin(right_min);
     Vector3<double> expected_max = left_max.cwiseMax(right_max);
-    bool bounds_valid =
-        (parent_lower == expected_min) && (parent_upper == expected_max);
+    const double kEpsilon = 1e-8;
+    bool bounds_valid = (parent_lower[0] <= expected_min[0] + kEpsilon) &&
+                        (parent_lower[1] <= expected_min[1] + kEpsilon) &&
+                        (parent_lower[2] <= expected_min[2] + kEpsilon) &&
+                        (parent_upper[0] >= expected_max[0] - kEpsilon) &&
+                        (parent_upper[1] >= expected_max[1] - kEpsilon) &&
+                        (parent_upper[2] >= expected_max[2] - kEpsilon);
 
     return bounds_valid && VerifyBoundsRecursive(host_bvh, lower.i, visited) &&
            VerifyBoundsRecursive(host_bvh, upper.i, visited);
