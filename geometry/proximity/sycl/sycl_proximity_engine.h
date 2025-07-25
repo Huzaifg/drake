@@ -123,11 +123,16 @@ class SyclProximityEngineAttorney {
   static DeviceBVHData get_bvh_data(SyclProximityEngine::Impl* impl);
   static SyclMemoryManager get_mem_mgr(SyclProximityEngine::Impl* impl);
   static sycl::queue get_q_device(SyclProximityEngine::Impl* impl);
+  static HostMeshData get_mesh_data(SyclProximityEngine::Impl* impl);
 
   // Timing logger access
   static void PrintTimingStats(SyclProximityEngine::Impl* impl);
   static void PrintTimingStatsJson(SyclProximityEngine::Impl* impl,
                                    const std::string& path);
+  static std::unordered_map<
+      SortedPair<GeometryId>,
+      std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
+  get_collision_candidates_to_data(SyclProximityEngine::Impl* impl);
 };
 
 }  // namespace sycl_impl

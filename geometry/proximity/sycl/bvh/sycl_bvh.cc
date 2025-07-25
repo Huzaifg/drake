@@ -31,6 +31,8 @@ class BuildLeavesKernel;
 class BuildTreeKernel;
 class PackLeavesKernel;
 class RefitKernel;
+class ComputeCollisionCountsKernel;
+class ComputeCollisionPairsKernel;
 
 void BVHBroadPhase::build(
     const DeviceMeshData& mesh_data,
@@ -272,7 +274,6 @@ void BVHBroadPhase::build(
                 make_node(lower_W, geom_local_primitive_index, true);
             bvhAll[mesh_id].node_uppers[local_array_indexer] =
                 make_node(upper_W, geom_local_primitive_index, false);
-
             // Write leaf key ranges
             // Store ranges using global node indexing (mesh-local leaf index +
             // global node offset)
@@ -283,7 +284,6 @@ void BVHBroadPhase::build(
           }
         });
   });
-
   // Build the entire tree hierarchicy and update the internal node bounds
   auto build_tree_event = q_device.submit([&](sycl::handler& h) {
     const uint32_t work_group_size = 512;
@@ -578,8 +578,9 @@ sycl::event BVHBroadPhase::refit(const DeviceMeshData& mesh_data,
             BVHPackedNodeHalf& lower = bvh.node_lowers[local_element_index];
             BVHPackedNodeHalf& upper = bvh.node_uppers[local_element_index];
 
-            // Only set these new bounding boxes if the leaf is not a muted leaf
-            // (parent of leaf has not been made leaf in packing)
+            // Only set these new bounding boxes if the leaf is not a
+            // muted leaf (parent of leaf has not been made leaf in
+            // packing)
             if (!bvh.node_lowers[parent].b) {
               const uint32_t start = lower.i;
               const uint32_t end = upper.i;
@@ -627,15 +628,45 @@ sycl::event BVHBroadPhase::refit(const DeviceMeshData& mesh_data,
                 BVHPackedNodeHalf& parent_lower = bvh.node_lowers[parent];
                 BVHPackedNodeHalf& parent_upper = bvh.node_uppers[parent];
                 if (parent_lower.b) {
-                  // a packed leaf node can still be a parent in LBVH, we need
-                  // to recompute its bounds since we've lost its left and right
-                  // child node index in the muting process
+                  // a packed leaf node can still be a parent in LBVH,
+                  // we need to recompute its bounds since we've lost
+                  // its left and right child node index in the muting
+                  // process
                   int parent_parent = bvh.node_parents[parent];
 
-                  // Parent should also not a leaf, otherwise we are in muted
-                  // section
-                  if (parent_parent != -1 &&
-                      !bvh.node_lowers[parent_parent].b) {
+                  if (parent_parent == -1) {
+                    // Root node is a leaf (very rare case where we have only a
+                    // handful of elements in the mesh) Update the bounds like
+                    // its a leaf node
+                    const uint32_t start = parent_lower.i;
+                    const uint32_t end = parent_upper.i;
+                    Vector3<double> lower_W(std::numeric_limits<double>::max(),
+                                            std::numeric_limits<double>::max(),
+                                            std::numeric_limits<double>::max());
+                    Vector3<double> upper_W(std::numeric_limits<double>::min(),
+                                            std::numeric_limits<double>::min(),
+                                            std::numeric_limits<double>::min());
+                    for (uint32_t local_primitive_index = start;
+                         local_primitive_index < end; local_primitive_index++) {
+                      uint32_t unsorted_local_primitive_index =
+                          indicesAll[local_primitive_index +
+                                     global_element_offset];
+                      Vector3<double> lower_W_i =
+                          element_aabb_min_W[unsorted_local_primitive_index +
+                                             global_element_offset];
+                      Vector3<double> upper_W_i =
+                          element_aabb_max_W[unsorted_local_primitive_index +
+                                             global_element_offset];
+                      lower_W = ComponentwiseMin(lower_W, lower_W_i);
+                      upper_W = ComponentwiseMax(upper_W, upper_W_i);
+                    }
+                    parent_lower.x = lower_W[0];
+                    parent_lower.y = lower_W[1];
+                    parent_lower.z = lower_W[2];
+                    parent_upper.x = upper_W[0];
+                    parent_upper.y = upper_W[1];
+                    parent_upper.z = upper_W[2];
+                  } else if (!bvh.node_lowers[parent_parent].b) {
                     const uint32_t start = parent_lower.i;
                     const uint32_t end = parent_upper.i;
                     Vector3<double> lower_W(std::numeric_limits<double>::max(),
@@ -666,8 +697,8 @@ sycl::event BVHBroadPhase::refit(const DeviceMeshData& mesh_data,
                     parent_upper.z = upper_W[2];
                   }
                 } else {
-                  // Parent is not a leaf so we recompute its bounds from its
-                  // left and right children
+                  // Parent is not a leaf so we recompute its bounds
+                  // from its left and right children
                   const uint32_t left = parent_lower.i;
                   const uint32_t right = parent_upper.i;
 
@@ -708,24 +739,324 @@ sycl::event BVHBroadPhase::refit(const DeviceMeshData& mesh_data,
   return refit_event;
 }
 
-sycl::event BVHBroadPhase::BroadPhase(
+sycl::event BVHBroadPhase::ComputeCollisionCounts(
+    const uint32_t mesh_a, const uint32_t mesh_b, const DeviceBVHData& bvh_data,
+    const DeviceMeshData& mesh_data, DeviceMeshACollisionCounters& cc,
+    sycl::event& event_to_depend_on, sycl::queue& q_device) {
+  // Number of primitives in mesh A
+  uint32_t num_primitives_a = mesh_data.element_counts[mesh_a];
+  // BVH of mesh B
+  BVH& bvh_b = bvh_data.bvhAll[mesh_b];
+
+  auto compute_collision_counts_event = q_device.submit([&](sycl::handler& h) {
+    h.depends_on({event_to_depend_on});
+    const uint32_t work_group_size = 64;
+    const uint32_t elements_a =
+        RoundUpToWorkGroupSize(num_primitives_a, work_group_size);
+    h.parallel_for<ComputeCollisionCountsKernel>(
+        sycl::nd_range<1>(sycl::range<1>(elements_a),
+                          sycl::range<1>(work_group_size)),
+        [=, node_lowers = bvh_b.node_lowers, node_uppers = bvh_b.node_uppers,
+         num_primitives_a = num_primitives_a, mesh_a = mesh_a, mesh_b = mesh_b,
+         element_offsets = mesh_data.element_offsets,
+         element_aabb_min_W = mesh_data.element_aabb_min_W,
+         element_aabb_max_W = mesh_data.element_aabb_max_W,
+         indicesAll = bvh_data.indicesAll,
+         collision_counts = cc.collision_counts,
+         max_pressures = mesh_data.max_pressures,
+         min_pressures =
+             mesh_data.min_pressures] [[intel::kernel_args_restrict]] (
+            sycl::nd_item<1> item) {
+          uint32_t elementId_A = item.get_global_id(0);
+          if (elementId_A >= num_primitives_a) {
+            return;
+          }
+          uint32_t element_offset_A = element_offsets[mesh_a];
+          uint32_t element_offset_B = element_offsets[mesh_b];
+          uint32_t global_elementId_A = elementId_A + element_offset_A;
+          // We process in the order of morton code's.
+          // This is because two elements that have similar morton codes
+          // and are thus closer to each other would tend to traverse the tree
+          // to similar depths.
+          uint32_t local_tetId_A = indicesAll[global_elementId_A];
+          // TODO (Huzaifa): This access will be uncoalesced since we are
+          // accessing my morton order code. Evaluate trade off between thread
+          // divergence if we don't do morton order code and memory access
+          // pattern if we do.
+          uint32_t global_primitive_index_A = local_tetId_A + element_offset_A;
+          const Vector3<double> lower_W_Ai =
+              element_aabb_min_W[global_primitive_index_A];
+          const Vector3<double> upper_W_Ai =
+              element_aabb_max_W[global_primitive_index_A];
+          const double max_pressure_A = max_pressures[global_primitive_index_A];
+          const double min_pressure_A = min_pressures[global_primitive_index_A];
+
+          uint32_t query_stack[static_cast<uint32_t>(BVHParams::kMaxDepth)];
+          // Start at root node
+          query_stack[0] = *bvh_b.root;  // mesh local index
+          uint32_t stack_nc = 1;         // num of nodes in stack
+          uint32_t num_collisions = 0;
+
+          while (stack_nc) {
+            uint32_t node_index = query_stack[--stack_nc];
+            BVHPackedNodeHalf& node_lower = node_lowers[node_index];
+            BVHPackedNodeHalf& node_upper = node_uppers[node_index];
+
+            if (!sycl_impl::AABBsIntersect(
+                    lower_W_Ai, upper_W_Ai,
+                    Vector3<double>(node_lower.x, node_lower.y, node_lower.z),
+                    Vector3<double>(node_upper.x, node_upper.y,
+                                    node_upper.z))) {
+              continue;
+            }
+            const uint32_t left = node_lower.i;
+            const uint32_t right = node_upper.i;
+
+            if (node_lower.b) {
+              // Leaf node can have more than 1 primitive - serially check each
+              // collision
+              for (uint32_t local_primitive_index = left;
+                   local_primitive_index < right; local_primitive_index++) {
+                uint32_t unsorted_local_primitive_index =
+                    indicesAll[local_primitive_index + element_offset_B];
+                uint32_t global_primitive_index_B =
+                    unsorted_local_primitive_index + element_offset_B;
+                const Vector3<double> lower_W_i =
+                    element_aabb_min_W[global_primitive_index_B];
+                const Vector3<double> upper_W_i =
+                    element_aabb_max_W[global_primitive_index_B];
+                const double max_pressure_B =
+                    max_pressures[global_primitive_index_B];
+                const double min_pressure_B =
+                    min_pressures[global_primitive_index_B];
+                if (sycl_impl::AABBsIntersect(lower_W_Ai, upper_W_Ai, lower_W_i,
+                                              upper_W_i) &&
+                    (sycl_impl::PressuresIntersect(
+                        min_pressure_A, max_pressure_A, min_pressure_B,
+                        max_pressure_B))) {
+                  num_collisions++;
+                }
+              }
+            } else {
+              // Continue traversal
+              query_stack[stack_nc++] = left;
+              query_stack[stack_nc++] = right;
+            }
+          }
+
+          // Store the counts
+          // Storing in order of morton code
+          collision_counts[elementId_A] = num_collisions;
+        });
+  });
+
+  return compute_collision_counts_event;
+}
+
+sycl::event BVHBroadPhase::ComputeCollisionPairs(
+    const uint32_t mesh_a, const uint32_t mesh_b, const DeviceBVHData& bvh_data,
+    const DeviceMeshData& mesh_data, DeviceMeshACollisionCounters& cc,
+    DeviceMeshPairCollidingIndices& ci, sycl::queue& q_device) {
+  // Number of primitives in mesh A
+  uint32_t num_primitives_a = mesh_data.element_counts[mesh_a];
+  // BVH of mesh B
+  BVH& bvh_b = bvh_data.bvhAll[mesh_b];
+
+  auto compute_collision_pairs_event = q_device.submit([&](sycl::handler& h) {
+    const uint32_t work_group_size = 64;
+    const uint32_t elements_a =
+        RoundUpToWorkGroupSize(num_primitives_a, work_group_size);
+    h.parallel_for<ComputeCollisionPairsKernel>(
+        sycl::nd_range<1>(sycl::range<1>(elements_a),
+                          sycl::range<1>(work_group_size)),
+        [=, node_lowers = bvh_b.node_lowers, node_uppers = bvh_b.node_uppers,
+         num_primitives_a = num_primitives_a, mesh_a = mesh_a, mesh_b = mesh_b,
+         element_offsets = mesh_data.element_offsets,
+         element_aabb_min_W = mesh_data.element_aabb_min_W,
+         element_aabb_max_W = mesh_data.element_aabb_max_W,
+         indicesAll = bvh_data.indicesAll,
+         collision_counts = cc.collision_counts,
+         collision_indices_B = ci.collision_indices_B,
+         collision_indices_A = ci.collision_indices_A,
+         max_pressures = mesh_data.max_pressures,
+         min_pressures =
+             mesh_data.min_pressures] [[intel::kernel_args_restrict]] (
+            sycl::nd_item<1> item) {
+          uint32_t elementId_A = item.get_global_id(0);
+          if (elementId_A >= num_primitives_a) {
+            return;
+          }
+          uint32_t element_offset_A = element_offsets[mesh_a];
+          uint32_t element_offset_B = element_offsets[mesh_b];
+          uint32_t global_elementId_A = elementId_A + element_offset_A;
+          // We process in the order of morton code's.
+          // This is because two elements that have similar morton codes
+          // and are thus closer to each other would tend to traverse the tree
+          // to similar depths.
+          uint32_t local_tetId_A = indicesAll[global_elementId_A];
+          uint32_t global_primitive_index_A = local_tetId_A + element_offset_A;
+          // Get the offset that this AABB writes to
+          uint32_t write_offset = collision_counts[elementId_A];
+          // TODO (Huzaifa): This access will be uncoalesced since we are
+          // accessing my morton order code. Evaluate trade off between thread
+          // divergence if we don't do morton order code and memory access
+          // pattern if we do.
+          Vector3<double> lower_W_Ai =
+              element_aabb_min_W[local_tetId_A + element_offset_A];
+          Vector3<double> upper_W_Ai =
+              element_aabb_max_W[local_tetId_A + element_offset_A];
+          const double max_pressure_A = max_pressures[global_primitive_index_A];
+          const double min_pressure_A = min_pressures[global_primitive_index_A];
+
+          uint32_t query_stack[static_cast<uint32_t>(BVHParams::kMaxDepth)];
+          // Start at root node
+          query_stack[0] = *bvh_b.root;  // mesh local index
+          uint32_t stack_nc = 1;         // num of nodes in stack
+          // number of collision indices already written
+          uint32_t num_collisions = 0;
+
+          while (stack_nc) {
+            uint32_t node_index = query_stack[--stack_nc];
+            BVHPackedNodeHalf& node_lower = node_lowers[node_index];
+            BVHPackedNodeHalf& node_upper = node_uppers[node_index];
+
+            if (!sycl_impl::AABBsIntersect(
+                    lower_W_Ai, upper_W_Ai,
+                    Vector3<double>(node_lower.x, node_lower.y, node_lower.z),
+                    Vector3<double>(node_upper.x, node_upper.y,
+                                    node_upper.z))) {
+              continue;
+            }
+            const uint32_t left = node_lower.i;
+            const uint32_t right = node_upper.i;
+
+            if (node_lower.b) {
+              // Leaf node can have more than 1 primitive - serially check each
+              // collision
+              for (uint32_t local_primitive_index = left;
+                   local_primitive_index < right; local_primitive_index++) {
+                uint32_t unsorted_local_primitive_index =
+                    indicesAll[local_primitive_index + element_offset_B];
+                uint32_t global_primitive_index_B =
+                    unsorted_local_primitive_index + element_offset_B;
+                const Vector3<double> lower_W_i =
+                    element_aabb_min_W[global_primitive_index_B];
+                const Vector3<double> upper_W_i =
+                    element_aabb_max_W[global_primitive_index_B];
+                const double max_pressure_B =
+                    max_pressures[global_primitive_index_B];
+                const double min_pressure_B =
+                    min_pressures[global_primitive_index_B];
+                if (sycl_impl::AABBsIntersect(lower_W_Ai, upper_W_Ai, lower_W_i,
+                                              upper_W_i) &&
+                    (sycl_impl::PressuresIntersect(
+                        min_pressure_A, max_pressure_A, min_pressure_B,
+                        max_pressure_B))) {
+                  // Where to write - this element offset + number of collisions
+                  // this node has processed What to write - global index of
+                  // element from mesh B. This can directly index into our
+                  // global arrays where data is stored
+                  collision_indices_B[write_offset + num_collisions] =
+                      global_primitive_index_B;
+                  collision_indices_A[write_offset + num_collisions] =
+                      global_primitive_index_A;
+                  num_collisions++;
+                }
+              }
+            } else {
+              // Continue traversal
+              query_stack[stack_nc++] = left;
+              query_stack[stack_nc++] = right;
+            }
+          }
+        });
+  });
+
+  return compute_collision_pairs_event;
+}
+
+void BVHBroadPhase::BroadPhase(
     const DeviceMeshData& mesh_data,
     const std::vector<Vector3<double>>& sorted_total_lower,
     const std::vector<Vector3<double>>& sorted_total_upper,
     DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
+    std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
+                                           DeviceMeshPairCollidingIndices>>&
+        collision_candidates_to_data,
     SyclMemoryManager& memory_manager, sycl::queue& q_device) {
+  auto policy = oneapi::dpl::execution::make_device_policy(q_device);
   // Run a refit with the new AABBs - If the BVH is just built, then we don't
   // need to refit on the very first time step
   // By default, we refit every single mesh every time step because otherwise
   // the number of nodes will be too little for the GPU
   // TODO(Huzaifa): Refit only colliding meshes and compare the performance
-  if (IsBVHRefitted()) {
-    auto refit_event = refit(mesh_data, bvh_data, element_aabb_event,
-                             memory_manager, q_device);
-  }
-  bvh_refitted_ = false;
+  sycl::event refit_event;
+  // if (!IsBVHRefitted()) {
+  refit_event =
+      refit(mesh_data, bvh_data, element_aabb_event, memory_manager, q_device);
+  // }
 
-  return sycl::event();
+  // Process the collision pairs
+  // First the number of collisions for each element of mesh A is computed.
+  // sycl::event event_to_depend_on =
+  //     IsBVHRefitted() ? element_aabb_event : refit_event;
+  sycl::event event_to_depend_on = refit_event;
+  std::unordered_map<uint64_t, sycl::event> pair_events_map;
+  for (auto& [key, value] : collision_candidates_to_data) {
+    auto& [cc, ci] = value;
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    pair_events_map[key] = ComputeCollisionCounts(
+        mesh_a, mesh_b, bvh_data, mesh_data, cc, event_to_depend_on, q_device);
+  }
+
+  // Scan to get total collisions and offsets
+  for (auto& [key, value] : collision_candidates_to_data) {
+    auto& [cc, ci] = value;
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    pair_events_map[key].wait();
+    // Store the last element's collision count
+    uint32_t last_element_collision_count = 0;
+    q_device
+        .memcpy(&last_element_collision_count,
+                cc.collision_counts + cc.size_ - 1, sizeof(uint32_t))
+        .wait();
+    cc.last_element_collision_count = last_element_collision_count;
+    // Scan and get total collision count
+    oneapi::dpl::exclusive_scan(policy, cc.collision_counts,
+                                cc.collision_counts + cc.size_,
+                                cc.collision_counts, static_cast<uint32_t>(0));
+  }
+  // Wait for all the scans to complete
+  q_device.wait_and_throw();
+
+  // Compute the total collisions and assign the memory required to compute the
+  // collision pairs
+  for (auto& [key, value] : collision_candidates_to_data) {
+    auto& [cc, ci] = value;
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    uint32_t total_collisions = 0;
+    q_device
+        .memcpy(&total_collisions, cc.collision_counts + cc.size_ - 1,
+                sizeof(uint32_t))
+        .wait();
+    cc.total_collisions = total_collisions + cc.last_element_collision_count;
+    // Resize buffers that store actual collision pairs
+    SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
+        memory_manager, ci, cc.total_collisions);
+  }
+
+  // Compute the actual collision pairs
+  std::vector<sycl::event> pair_events_vec;
+  for (auto& [key, value] : collision_candidates_to_data) {
+    auto& [cc, ci] = value;
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    pair_events_vec.push_back(ComputeCollisionPairs(
+        mesh_a, mesh_b, bvh_data, mesh_data, cc, ci, q_device));
+  }
+
+  sycl::event::wait_and_throw(pair_events_vec);
+  // We need to refit every timestep except for the first one
+  SetBVHRefitted(false);
 }
 }  // namespace sycl_impl
 }  // namespace internal

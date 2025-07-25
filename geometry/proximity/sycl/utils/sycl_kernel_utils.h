@@ -36,6 +36,35 @@ SYCL_EXTERNAL inline Vector3<double> ComponentwiseMax(
   return max_v;
 }
 
+// Returns a unique key for a pair of integers
+SYCL_EXTERNAL inline uint64_t key(uint32_t i, uint32_t j) {
+  return static_cast<uint64_t>(i) << 32 | j;
+}
+
+// Return pair of integers from a unique key
+SYCL_EXTERNAL inline std::pair<uint32_t, uint32_t> key_to_pair(uint64_t key) {
+  return std::make_pair(static_cast<uint32_t>(key >> 32),
+                        static_cast<uint32_t>(key & 0xFFFFFFFF));
+}
+
+SYCL_EXTERNAL inline bool AABBsIntersect(const Vector3<double>& lower_A,
+                                         const Vector3<double>& upper_A,
+                                         const Vector3<double>& node_lower,
+                                         const Vector3<double>& node_upper) {
+  for (int i = 0; i < 3; ++i) {
+    if (node_upper[i] < lower_A[i]) return false;
+    if (upper_A[i] < node_lower[i]) return false;
+  }
+  return true;
+}
+
+SYCL_EXTERNAL inline bool PressuresIntersect(const double min_A,
+                                             const double max_A,
+                                             const double min_B,
+                                             const double max_B) {
+  return !(max_B < min_A || max_A < min_B);
+}
+
 }  // namespace sycl_impl
 }  // namespace internal
 }  // namespace geometry

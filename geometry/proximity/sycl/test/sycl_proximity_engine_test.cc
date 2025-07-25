@@ -90,6 +90,21 @@ VolumeMesh<double> TransformMesh(const hydroelastic::SoftGeometry& geometry,
   return mesh;
 }
 
+// Helper to check BVH properties for a given mesh in the SYCL engine.
+std::tuple<int, int, int, double, bool> CheckSyclBvhProperties(
+    const SyclBvhAttorney::HostBVH& host_bvh, const std::string& filepath) {
+  const int height = SyclBvhAttorney::ComputeHeight(host_bvh);
+  const int num_leaves = SyclBvhAttorney::CountLeaves(host_bvh);
+  const int balance_factor = SyclBvhAttorney::ComputeBalanceFactor(host_bvh);
+  const double average_depth =
+      SyclBvhAttorney::ComputeAverageLeafDepth(host_bvh);
+  const bool bounds_valid = SyclBvhAttorney::VerifyBounds(host_bvh);
+  SyclBvhAttorney::ComputeAndPrintImbalanceHistogram(host_bvh, filepath);
+  EXPECT_EQ(bounds_valid, true);
+
+  return {height, num_leaves, balance_factor, average_depth, bounds_valid};
+}
+
 GTEST_TEST(SPETest, ZeroMeshes) {
   // Should throw when soft_geometries is empty
   std::unordered_map<GeometryId, hydroelastic::SoftGeometry> soft_geometries;
@@ -111,7 +126,7 @@ GTEST_TEST(SPETest, SingleMesh) {
   std::unordered_map<GeometryId, Vector3<double>> total_upper{{id, max_W}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries, total_lower, total_upper);
-  // engine.UpdateCollisionCandidates({});
+
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {id, RigidTransformd::Identity()}};
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
@@ -142,6 +157,9 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
                                                               {idB, maxB}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries, total_lower, total_upper);
+  std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(idA, idB)};
+  engine.UpdateCollisionCandidates(collision_candidates);
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks - This should be 4 + 0 = 4
@@ -191,9 +209,22 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
 
   // Collision filter should be [0 0 1 0] since element 1 of A is colliding with
   // element 0 of B
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  // loop over CPU collision candidates and just print global collision indices
+  for (auto& candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    EXPECT_EQ(cc.total_collisions, 1);
+    for (uint32_t i = 0; i < ci.collision_indices_A.size(); ++i) {
+      // Mesh 1 2nd element collides with Mesh 2 1st element
+      // Indices returned by ci is global indices
+      EXPECT_EQ(ci.collision_indices_A[i], 1);
+      EXPECT_EQ(ci.collision_indices_B[i], 2);
+    }
+  }
+
   std::vector<uint8_t> collision_filter =
       SyclProximityEngineAttorney::get_collision_filter(impl);
-
   std::vector<uint8_t> expected_collision_filter{0, 0, 1, 0};
   for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(collision_filter[i], expected_collision_filter[i]);
@@ -202,7 +233,22 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
   // Move geometries closer so that all elements are colliding and check
   // collision filter
   X_WGs[idB] = RigidTransformd(Vector3d{0, 0, 0.3});
+  engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB)});
   surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
+
+  collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  for (auto& candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    EXPECT_EQ(cc.total_collisions, 3);
+    EXPECT_EQ(ci.collision_indices_A[0], 0);
+    EXPECT_EQ(ci.collision_indices_B[0], 2);
+    EXPECT_EQ(ci.collision_indices_A[1], 1);
+    EXPECT_EQ(ci.collision_indices_B[1], 2);
+    EXPECT_EQ(ci.collision_indices_A[2], 1);
+    EXPECT_EQ(ci.collision_indices_B[2], 3);
+  }
+
   collision_filter = SyclProximityEngineAttorney::get_collision_filter(impl);
   // Element 0 of A collides with element 0 of B
   // Element 1 of A collides with element 0 and 1 of B
@@ -239,9 +285,10 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
       {idA, maxA}, {idB, maxB}, {idC, maxC}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries, total_lower, total_upper);
-  // engine.UpdateCollisionCandidates({SortedPair<GeometryId>(idA, idB),
-  //                                   SortedPair<GeometryId>(idA, idC),
-  //                                   SortedPair<GeometryId>(idB, idC)});
+  std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(idA, idB), SortedPair<GeometryId>(idA, idC),
+      SortedPair<GeometryId>(idB, idC)};
+  engine.UpdateCollisionCandidates(collision_candidates);
   // Move meshes along Z so that they just intersect
 
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
@@ -253,6 +300,23 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
   // Geom C checks none
   // Total = 12 checks
   EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 12);
+
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  for (auto& candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    if (candidate == SortedPair<GeometryId>(idA, idB)) {
+      EXPECT_EQ(cc.total_collisions, 1);
+      EXPECT_EQ(ci.collision_indices_A[0], 1);
+      EXPECT_EQ(ci.collision_indices_B[0], 2);
+    } else if (candidate == SortedPair<GeometryId>(idB, idC)) {
+      EXPECT_EQ(cc.total_collisions, 1);
+      EXPECT_EQ(ci.collision_indices_A[0], 3);
+      EXPECT_EQ(ci.collision_indices_B[0], 4);
+    } else if (candidate == SortedPair<GeometryId>(idA, idC)) {
+      EXPECT_EQ(cc.total_collisions, 0);
+    }
+  }
 
   // Collision filter check
   std::vector<uint8_t> collision_filter =
@@ -278,9 +342,41 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
   // Move meshes closer so all elements collide
   X_WGs[idB] = RigidTransformd(Vector3d{0, 0, 0.3});
   X_WGs[idC] = RigidTransformd(Vector3d{0, 0, 0.6});
+  engine.UpdateCollisionCandidates(collision_candidates);
   surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
-  collision_filter = SyclProximityEngineAttorney::get_collision_filter(impl);
 
+  collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  for (auto& candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    if (candidate == SortedPair<GeometryId>(idA, idB)) {
+      EXPECT_EQ(cc.total_collisions, 3);
+      EXPECT_EQ(ci.collision_indices_A[0], 0);
+      EXPECT_EQ(ci.collision_indices_B[0], 2);
+      EXPECT_EQ(ci.collision_indices_A[1], 1);
+      EXPECT_EQ(ci.collision_indices_B[1], 2);
+      EXPECT_EQ(ci.collision_indices_A[2], 1);
+      EXPECT_EQ(ci.collision_indices_B[2], 3);
+    } else if (candidate == SortedPair<GeometryId>(idA, idC)) {
+      EXPECT_EQ(cc.total_collisions, 3);
+      EXPECT_EQ(ci.collision_indices_A[0], 0);
+      EXPECT_EQ(ci.collision_indices_B[0], 4);
+      EXPECT_EQ(ci.collision_indices_A[1], 1);
+      EXPECT_EQ(ci.collision_indices_B[1], 4);
+      EXPECT_EQ(ci.collision_indices_A[2], 1);
+      EXPECT_EQ(ci.collision_indices_B[2], 5);
+    } else if (candidate == SortedPair<GeometryId>(idB, idC)) {
+      EXPECT_EQ(cc.total_collisions, 3);
+      EXPECT_EQ(ci.collision_indices_A[0], 2);
+      EXPECT_EQ(ci.collision_indices_B[0], 4);
+      EXPECT_EQ(ci.collision_indices_A[1], 3);
+      EXPECT_EQ(ci.collision_indices_B[1], 4);
+      EXPECT_EQ(ci.collision_indices_A[2], 3);
+      EXPECT_EQ(ci.collision_indices_B[2], 5);
+    }
+  }
+
+  collision_filter = SyclProximityEngineAttorney::get_collision_filter(impl);
   // With meshes closer, more elements should be colliding
   expected_collision_filter = {1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1};
   for (uint32_t i = 0; i < 12; ++i) {
@@ -334,6 +430,11 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
       {idA, maxA}, {idB, maxB}, {idC, maxC}, {idD, maxD}};
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries, total_lower, total_upper);
+  std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(idA, idB), SortedPair<GeometryId>(idA, idC),
+      SortedPair<GeometryId>(idA, idD), SortedPair<GeometryId>(idB, idC),
+      SortedPair<GeometryId>(idB, idD), SortedPair<GeometryId>(idC, idD)};
+  engine.UpdateCollisionCandidates(collision_candidates);
 
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
@@ -345,6 +446,31 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
   // Geom D checks none
   // Total = 24 checks
   EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 24);
+
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  for (auto& candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    if (candidate == SortedPair<GeometryId>(idA, idB)) {
+      EXPECT_EQ(cc.total_collisions, 1);
+      EXPECT_EQ(ci.collision_indices_A[0], 1);
+      EXPECT_EQ(ci.collision_indices_B[0], 2);
+    } else if (candidate == SortedPair<GeometryId>(idA, idC)) {
+      EXPECT_EQ(cc.total_collisions, 0);
+    } else if (candidate == SortedPair<GeometryId>(idA, idD)) {
+      EXPECT_EQ(cc.total_collisions, 0);
+    } else if (candidate == SortedPair<GeometryId>(idB, idC)) {
+      EXPECT_EQ(cc.total_collisions, 1);
+      EXPECT_EQ(ci.collision_indices_A[0], 3);
+      EXPECT_EQ(ci.collision_indices_B[0], 4);
+    } else if (candidate == SortedPair<GeometryId>(idB, idD)) {
+      EXPECT_EQ(cc.total_collisions, 0);
+    } else if (candidate == SortedPair<GeometryId>(idC, idD)) {
+      EXPECT_EQ(cc.total_collisions, 1);
+      EXPECT_EQ(ci.collision_indices_A[0], 5);
+      EXPECT_EQ(ci.collision_indices_B[0], 6);
+    }
+  }
 
   // Collision filter check
   std::vector<uint8_t> collision_filter =
@@ -417,8 +543,18 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
 
   bvhSphereA.Collide(bvhSphereB, X_AB, callback);
 
-  // Convert cadidate tets to collision_filter_ that can be compared to one from
-  // sycl_proximity_engine
+  // Expected candidate tets map
+  std::unordered_map<SortedPair<GeometryId>, std::vector<std::pair<int, int>>>
+      expected_candidate_tetrahedra;
+  const int num_elements_A = soft_geometryA.mesh().num_elements();
+  for (auto [eA, eB] : candidate_tetrahedra) {
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereB_id)]
+        .push_back(std::make_pair(eA, eB + num_elements_A));
+  }
+
+  // Convert cadidate tets to collision_filter_ that can be compared to one
+  // from sycl_proximity_engine
   std::vector<uint8_t> expected_filter(soft_geometryA.mesh().num_elements() *
                                            soft_geometryB.mesh().num_elements(),
                                        0);
@@ -442,8 +578,9 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
       soft_geometries, total_lower, total_upper);
 
   // Update collision candidates
-  // engine.UpdateCollisionCandidates(
-  //     {SortedPair<GeometryId>(sphereA_id, sphereB_id)});
+  std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(sphereA_id, sphereB_id)};
+  engine.UpdateCollisionCandidates(collision_candidates);
 
   // Move spheres closer so that they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
@@ -452,6 +589,85 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
 
   // Get the total checks
   const auto impl = SyclProximityEngineAttorney::get_impl(engine);
+
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  // Package obtained collisions as pair vector
+  std::vector<std::pair<int, int>> obtained_collisions;
+  std::vector<std::pair<int, int>> mismatch_pairs;
+  // Compare obtained collision pairs with expected from Drake
+  for (auto candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    auto ExpMeshA_indices = expected_candidate_tetrahedra[candidate];
+    // For each candidate on the GPU, we look for the corresponding
+    // candidate on the CPU. We should expect to find all.
+    for (uint32_t i = 0; i < cc.total_collisions; ++i) {
+      obtained_collisions.emplace_back(
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      auto it = std::find(
+          ExpMeshA_indices.begin(), ExpMeshA_indices.end(),
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      EXPECT_NE(it, ExpMeshA_indices.end());
+    }
+    // Inverse check: Find all the candidates found on the CPU but not on the
+    // GPU
+    for (auto [eA, eB] : ExpMeshA_indices) {
+      auto it = std::find(obtained_collisions.begin(),
+                          obtained_collisions.end(), std::make_pair(eA, eB));
+      if (it == obtained_collisions.end()) {
+        mismatch_pairs.emplace_back(std::make_pair(eA, eB));
+      }
+    }
+  }
+
+  // Verify that each of the mismatches is TRULY a false positive from the CPU
+  // broadphase. To do this, we compute the Aabb's of the element pairs in the
+  // world frame, and then compute the intersection of those Aabb's and verify
+  // that each intersection is empty.
+  const auto CalcAabb = [](const Vector3d& a, const Vector3d& b,
+                           const Vector3d& c, const Vector3d& d) {
+    Vector3d min = a;
+    Vector3d max = a;
+    min = min.cwiseMin(b);
+    max = max.cwiseMax(b);
+    min = min.cwiseMin(c);
+    max = max.cwiseMax(c);
+    min = min.cwiseMin(d);
+    max = max.cwiseMax(d);
+    return std::make_pair(min, max);
+  };
+
+  // Check mismatch pairs for false positives
+  for (auto [eA, eB] : mismatch_pairs) {
+    // Project back to local coordinates
+    eB = eB - num_elements_A;
+    const auto [minA, maxA] =
+        CalcAabb(X_WA * soft_geometryA.mesh().vertex(
+                            soft_geometryA.mesh().element(eA).vertex(0)),
+                 X_WA * soft_geometryA.mesh().vertex(
+                            soft_geometryA.mesh().element(eA).vertex(1)),
+                 X_WA * soft_geometryA.mesh().vertex(
+                            soft_geometryA.mesh().element(eA).vertex(2)),
+                 X_WA * soft_geometryA.mesh().vertex(
+                            soft_geometryA.mesh().element(eA).vertex(3)));
+    const auto [minB, maxB] =
+        CalcAabb(X_WB * soft_geometryB.mesh().vertex(
+                            soft_geometryB.mesh().element(eB).vertex(0)),
+                 X_WB * soft_geometryB.mesh().vertex(
+                            soft_geometryB.mesh().element(eB).vertex(1)),
+                 X_WB * soft_geometryB.mesh().vertex(
+                            soft_geometryB.mesh().element(eB).vertex(2)),
+                 X_WB * soft_geometryB.mesh().vertex(
+                            soft_geometryB.mesh().element(eB).vertex(3)));
+    // Compute the bounds of the intersection of the Aabbs. The intersection
+    // is empty if at least one of the dimensions has negative width.
+    const Vector3d intersection_min = minA.cwiseMax(minB);
+    const Vector3d intersection_max = maxA.cwiseMin(maxB);
+    const Vector3d intersection_widths = intersection_max - intersection_min;
+    EXPECT_LE(intersection_widths.minCoeff(), 0);
+  }
 
   // Collision filter check
   const std::vector<uint8_t> collision_filter =
@@ -472,23 +688,6 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
       mismatch_indices.push_back(i);
     }
   }
-
-  // Verify that each of the mismatches is TRULY a false positive from the CPU
-  // broadphase. To do this, we compute the Aabb's of the element pairs in the
-  // world frame, and then compute the intersection of those Aabb's and verify
-  // that each intersection is empty.
-  const auto CalcAabb = [](const Vector3d& a, const Vector3d& b,
-                           const Vector3d& c, const Vector3d& d) {
-    Vector3d min = a;
-    Vector3d max = a;
-    min = min.cwiseMin(b);
-    max = max.cwiseMax(b);
-    min = min.cwiseMin(c);
-    max = max.cwiseMax(c);
-    min = min.cwiseMin(d);
-    max = max.cwiseMax(d);
-    return std::make_pair(min, max);
-  };
 
   for (int i : mismatch_indices) {
     int eA = i / soft_geometryB.mesh().num_elements();
@@ -735,10 +934,10 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
 }
 
 GTEST_TEST(SPETest, ThreeSpheresColliding) {
-  constexpr double radius = 0.5;
-  constexpr double resolution_hint_A = 0.5 * radius;
-  constexpr double resolution_hint_B = 0.75 * radius;
-  constexpr double resolution_hint_C = radius;
+  constexpr double radius = 1.0;
+  constexpr double resolution_hint_A = 2 * radius;
+  constexpr double resolution_hint_B = 2 * radius;
+  constexpr double resolution_hint_C = 1 * radius;
   constexpr double hydroelastic_modulus = 1e+7;
 
   // Sphere A
@@ -843,10 +1042,32 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   const int num_A = soft_geometryA.mesh().num_elements();
   const int num_B = soft_geometryB.mesh().num_elements();
   const int num_C = soft_geometryC.mesh().num_elements();
+  fmt::print("Number of elements in geometry A: {}\n", num_A);
+  fmt::print("Number of elements in geometry B: {}\n", num_B);
+  fmt::print("Number of elements in geometry C: {}\n", num_C);
 
   const int AB_size = num_A * num_B;
   const int AC_size = num_A * num_C;
   const int BC_size = num_B * num_C;
+
+  // Expected candidate tetrahedra
+  std::unordered_map<SortedPair<GeometryId>, std::vector<std::pair<int, int>>>
+      expected_candidate_tetrahedra;
+  for (auto [eA, eB] : candidate_tetrahedra_AB) {
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereB_id)]
+        .emplace_back(eA, eB + num_A);
+  }
+  for (auto [eA, eC] : candidate_tetrahedra_AC) {
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereC_id)]
+        .emplace_back(eA, eC + num_A + num_B);
+  }
+  for (auto [eB, eC] : candidate_tetrahedra_BC) {
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereB_id,
+                                                         sphereC_id)]
+        .emplace_back(eB + num_A, eC + num_A + num_B);
+  }
 
   std::vector<uint8_t> expected_filter(AB_size + AC_size + BC_size, 0);
 
@@ -879,10 +1100,11 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
       soft_geometries, total_lower, total_upper);
 
   // Update collision candidates
-  // engine.UpdateCollisionCandidates(
-  //     {SortedPair<GeometryId>(sphereA_id, sphereB_id),
-  //      SortedPair<GeometryId>(sphereA_id, sphereC_id),
-  //      SortedPair<GeometryId>(sphereB_id, sphereC_id)});
+  std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(sphereA_id, sphereB_id),
+      SortedPair<GeometryId>(sphereA_id, sphereC_id),
+      SortedPair<GeometryId>(sphereB_id, sphereC_id)};
+  engine.UpdateCollisionCandidates(collision_candidates);
 
   // Move spheres closer so that they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
@@ -891,6 +1113,166 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
 
   // Get the total checks
   const auto impl = SyclProximityEngineAttorney::get_impl(engine);
+
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  // Package obtained collisions as pair vector
+  std::vector<std::pair<int, int>> obtained_collisions;
+  std::vector<std::pair<int, int>> mismatch_pairs;
+  // Compare obtained collision pairs with expected from Drake
+  for (auto candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    auto ExpMeshA_indices = expected_candidate_tetrahedra[candidate];
+    fmt::print("Obtained collisions {} for geometry {} and {}\n",
+               cc.total_collisions, candidate.first(), candidate.second());
+    fmt::print("Expected collisions {} for geometry {} and {}\n",
+               ExpMeshA_indices.size(), candidate.first(), candidate.second());
+    // For each candidate on the GPU, we look for the corresponding
+    // candidate on the CPU. We should expect to find all.
+    for (uint32_t i = 0; i < cc.total_collisions; ++i) {
+      obtained_collisions.emplace_back(
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      auto it = std::find(
+          ExpMeshA_indices.begin(), ExpMeshA_indices.end(),
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      EXPECT_NE(it, ExpMeshA_indices.end());
+    }
+    // Inverse check: Find all the candidates found on the CPU but not on the
+    // GPU
+    for (auto [eA, eB] : ExpMeshA_indices) {
+      auto it = std::find(obtained_collisions.begin(),
+                          obtained_collisions.end(), std::make_pair(eA, eB));
+      if (it == obtained_collisions.end()) {
+        mismatch_pairs.emplace_back(std::make_pair(eA, eB));
+      }
+    }
+  }
+
+  // Tree stats
+  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
+  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
+  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
+  auto host_mesh_data = SyclProximityEngineAttorney::get_mesh_data(impl);
+  auto host_indices_all = SyclBvhAttorney::GetHostIndicesAll(
+      bvh_data, host_mesh_data.total_elements, mem_mgr, q_device);
+  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+    fmt::print("Mesh {}\n", i);
+    const auto host_bvh =
+        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+    std::string filepath = fmt::format("histogram_{}.json", i);
+    const auto [height, num_leaves, balance_factor, average_depth,
+                bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
+    fmt::print(
+        "Mesh {}: height: {}, num_leaves: {}, balance_factor: {}, "
+        "average_depth: {}, bounds_valid: {}\n",
+        i, height, num_leaves, balance_factor, average_depth, bounds_valid);
+  }
+
+  fmt::print("Tree AABBs of all internal nodes\n");
+
+  // Tree AABBs of all internal nodes
+  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+    fmt::print("Mesh {}\n", i);
+    const auto host_bvh =
+        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+    SyclBvhAttorney::PrintNodeBoundingBoxes(host_bvh, host_indices_all,
+                                            host_mesh_data, i);
+  }
+
+  // Verify that each of the mismatches is TRULY a false positive from the CPU
+  // broadphase. To do this, we compute the Aabb's of the element pairs in the
+  // world frame, and then compute the intersection of those Aabb's and verify
+  // that each intersection is empty.
+  const auto CalcAabb = [](const Vector3d& a, const Vector3d& b,
+                           const Vector3d& c, const Vector3d& d) {
+    Vector3d min = a;
+    Vector3d max = a;
+    min = min.cwiseMin(b);
+    max = max.cwiseMax(b);
+    min = min.cwiseMin(c);
+    max = max.cwiseMax(c);
+    min = min.cwiseMin(d);
+    max = max.cwiseMax(d);
+    return std::make_pair(min, max);
+  };
+  // Store the element counts in vector in order to identify which geometry the
+  // element is from
+  auto find_geometry_index = [](const int global_index,
+                                const std::vector<int>& scan) {
+    auto it = std::upper_bound(scan.begin(), scan.end(), global_index);
+    return static_cast<int>(std::distance(scan.begin(), it)) - 1;
+  };
+  std::unordered_map<uint32_t, hydroelastic::SoftGeometry>
+      index_to_soft_geometry{
+          {0, soft_geometryA}, {1, soft_geometryB}, {2, soft_geometryC}};
+  std::unordered_map<uint32_t, RigidTransformd> Transforms{
+      {0, X_WA}, {1, X_WB}, {2, X_WC}};
+  std::vector<int> element_counts_scan = {0, num_A, num_A + num_B};
+  // Check mismatch pairs for false positives
+  for (auto [eA, eB] : mismatch_pairs) {
+    int geom_eA = find_geometry_index(eA, element_counts_scan);
+    int geom_eB = find_geometry_index(eB, element_counts_scan);
+    int local_eA = eA - element_counts_scan[geom_eA];
+    int local_eB = eB - element_counts_scan[geom_eB];
+    auto [minA, maxA] =
+        CalcAabb(Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(0)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(1)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(2)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(3)));
+
+    auto [minB, maxB] =
+        CalcAabb(Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(0)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(1)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(2)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(3)));
+
+    const Vector3d intersection_min = minA.cwiseMax(minB);
+    const Vector3d intersection_max = maxA.cwiseMin(maxB);
+    const Vector3d intersection_widths = intersection_max - intersection_min;
+    EXPECT_LE(intersection_widths.minCoeff(), 0);
+  }
 
   // Collision filter check
   const std::vector<uint8_t> collision_filter =
@@ -911,23 +1293,6 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
       mismatch_indices.push_back(i);
     }
   }
-
-  // Verify that each of the mismatches is TRULY a false positive from the CPU
-  // broadphase. To do this, we compute the Aabb's of the element pairs in the
-  // world frame, and then compute the intersection of those Aabb's and verify
-  // that each intersection is empty.
-  const auto CalcAabb = [](const Vector3d& a, const Vector3d& b,
-                           const Vector3d& c, const Vector3d& d) {
-    Vector3d min = a;
-    Vector3d max = a;
-    min = min.cwiseMin(b);
-    max = max.cwiseMax(b);
-    min = min.cwiseMin(c);
-    max = max.cwiseMax(c);
-    min = min.cwiseMin(d);
-    max = max.cwiseMax(d);
-    return std::make_pair(min, max);
-  };
 
   for (int i : mismatch_indices) {
     Vector3d min0, max0, min1, max1;
@@ -1278,6 +1643,10 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
       {sphereB_id, X_WB},
       {sphereC_id, X_WC},
       {sphereD_id, X_WD}};
+  engine.UpdateCollisionCandidates(
+      {SortedPair<GeometryId>(sphereA_id, sphereB_id),
+       SortedPair<GeometryId>(sphereA_id, sphereC_id),
+       SortedPair<GeometryId>(sphereB_id, sphereC_id)});
   const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks
@@ -1304,22 +1673,8 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
   }
 }
 
-// Helper to check BVH properties for a given mesh in the SYCL engine.
-std::tuple<int, int, int, double, bool> CheckSyclBvhProperties(
-    const SyclBvhAttorney::HostBVH& host_bvh, const std::string& filepath) {
-  const int height = SyclBvhAttorney::ComputeHeight(host_bvh);
-  const int num_leaves = SyclBvhAttorney::CountLeaves(host_bvh);
-  const int balance_factor = SyclBvhAttorney::ComputeBalanceFactor(host_bvh);
-  const double average_depth =
-      SyclBvhAttorney::ComputeAverageLeafDepth(host_bvh);
-  const bool bounds_valid = SyclBvhAttorney::VerifyBounds(host_bvh);
-  SyclBvhAttorney::ComputeAndPrintImbalanceHistogram(host_bvh, filepath);
-  EXPECT_EQ(bounds_valid, true);
-
-  return {height, num_leaves, balance_factor, average_depth, bounds_valid};
-}
-// Tests the efficiency and correctness of the BVH trees constructed by the SYCL
-// proximity engine
+// Tests the efficiency and correctness of the BVH trees constructed by the
+// SYCL proximity engine
 GTEST_TEST(SPEBvhTest, TwoSpheresTreeStats) {
   constexpr double radiusA = 1.0;
   constexpr double resolution_hintA = 0.2 * radiusA;
@@ -1384,6 +1739,8 @@ GTEST_TEST(SPEBvhTest, TwoSpheresTreeStats) {
   // Move spheres closer so they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {sphereA_id, X_WA}, {sphereB_id, X_WB}};
+  engine.UpdateCollisionCandidates(
+      {SortedPair<GeometryId>(sphereA_id, sphereB_id)});
   const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Extract Impl from the engine in order to get access to the private data
@@ -1493,6 +1850,10 @@ GTEST_TEST(SPEBvhTest, ThreeSpheresTreeStats) {
   // Move spheres closer so they collide
   const std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {sphereA_id, X_WA}, {sphereB_id, X_WB}, {sphereC_id, X_WC}};
+  engine.UpdateCollisionCandidates(
+      {SortedPair<GeometryId>(sphereA_id, sphereB_id),
+       SortedPair<GeometryId>(sphereA_id, sphereC_id),
+       SortedPair<GeometryId>(sphereB_id, sphereC_id)});
   const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Extract Impl from the engine in order to get access to the private data

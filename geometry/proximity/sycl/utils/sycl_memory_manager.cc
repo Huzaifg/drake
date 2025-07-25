@@ -50,7 +50,6 @@ void SyclMemoryHelper::AllocateBVHAllMeshMemory(SyclMemoryManager& mem_mgr,
 
 void SyclMemoryHelper::AllocateBVHAllMeshNodeCountsMemory(
     SyclMemoryManager& mem_mgr, DeviceBVHData& bvh_data) {
-  bvh_data.indicesAll = mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
   bvh_data.node_mesh_ids =
       mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
   bvh_data.num_childrenAll =
@@ -67,6 +66,38 @@ void SyclMemoryHelper::AllocateBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
       mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
   bvh_data.range_rightsAll =
       mem_mgr.AllocateDevice<uint32_t>(bvh_data.total_nodes);
+}
+
+void SyclMemoryHelper::AllocateDeviceMeshPairCollidingIndicesMemory(
+    SyclMemoryManager& mem_mgr,
+    DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
+    uint32_t new_size) {
+  mesh_pair_colliding_indices.collision_indices_A =
+      mem_mgr.AllocateDevice<uint32_t>(new_size);
+  mesh_pair_colliding_indices.collision_indices_B =
+      mem_mgr.AllocateDevice<uint32_t>(new_size);
+  mesh_pair_colliding_indices.capacity_ = new_size;
+  mesh_pair_colliding_indices.size_ = 0;
+}
+
+void SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
+    SyclMemoryManager& mem_mgr,
+    DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
+    uint32_t new_size) {
+  if (new_size > mesh_pair_colliding_indices.capacity_) {
+    // No need to copy any of the data since this is rewritten anyways
+    mem_mgr.Free(mesh_pair_colliding_indices.collision_indices_A);
+    mem_mgr.Free(mesh_pair_colliding_indices.collision_indices_B);
+    mesh_pair_colliding_indices.capacity_ =
+        std::max(static_cast<uint32_t>(
+                     std::ceil(mesh_pair_colliding_indices.capacity_ * 1.2)),
+                 new_size);
+    mesh_pair_colliding_indices.collision_indices_A =
+        mem_mgr.AllocateDevice<uint32_t>(mesh_pair_colliding_indices.capacity_);
+    mesh_pair_colliding_indices.collision_indices_B =
+        mem_mgr.AllocateDevice<uint32_t>(mesh_pair_colliding_indices.capacity_);
+  }
+  mesh_pair_colliding_indices.size_ = new_size;
 }
 
 void SyclMemoryHelper::AllocateMeshElementVerticesMemory(

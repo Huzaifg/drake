@@ -71,17 +71,16 @@ class SyclProximityEngine::Impl {
     // #endif
 
     // Extract and sort geometry IDs for deterministic ordering
-    std::vector<GeometryId> sorted_ids;
-    sorted_ids.reserve(soft_geometries.size());
+    sorted_ids_.reserve(soft_geometries.size());
     for (const auto& [id, _] : soft_geometries) {
-      sorted_ids.push_back(id);
+      sorted_ids_.push_back(id);
     }
-    std::sort(sorted_ids.begin(), sorted_ids.end());
+    std::sort(sorted_ids_.begin(), sorted_ids_.end());
 
-    sorted_total_lower_.reserve(sorted_ids.size());
-    sorted_total_upper_.reserve(sorted_ids.size());
+    sorted_total_lower_.reserve(sorted_ids_.size());
+    sorted_total_upper_.reserve(sorted_ids_.size());
 
-    for (const auto& id : sorted_ids) {
+    for (const auto& id : sorted_ids_) {
       sorted_total_lower_.push_back(total_lower_map.at(id));
       sorted_total_upper_.push_back(total_upper_map.at(id));
     }
@@ -100,8 +99,8 @@ class SyclProximityEngine::Impl {
     total_nodes_ = 0;
 
     // Use the sorted IDs to ensure deterministic ordering
-    for (uint32_t id_index = 0; id_index < sorted_ids.size(); ++id_index) {
-      const GeometryId& id = sorted_ids[id_index];
+    for (uint32_t id_index = 0; id_index < sorted_ids_.size(); ++id_index) {
+      const GeometryId& id = sorted_ids_[id_index];
       const hydroelastic::SoftGeometry& soft_geometry = soft_geometries.at(id);
       const hydroelastic::SoftMesh& soft_mesh = soft_geometry.soft_mesh();
       const VolumeMesh<double>& mesh = soft_mesh.mesh();
@@ -143,8 +142,8 @@ class SyclProximityEngine::Impl {
     std::vector<sycl::event> transfer_events;  // Store all transfer events
 
     // Use the sorted IDs for deterministic ordering
-    for (uint32_t id_index = 0; id_index < sorted_ids.size(); ++id_index) {
-      const GeometryId& id = sorted_ids[id_index];
+    for (uint32_t id_index = 0; id_index < sorted_ids_.size(); ++id_index) {
+      const GeometryId& id = sorted_ids_[id_index];
       const hydroelastic::SoftGeometry& soft_geometry = soft_geometries.at(id);
       const hydroelastic::SoftMesh& soft_mesh = soft_geometry.soft_mesh();
       const VolumeMesh<double>& mesh = soft_mesh.mesh();
@@ -329,6 +328,21 @@ class SyclProximityEngine::Impl {
       SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
       SyclMemoryHelper::FreeBVHSingleMeshAndAllMeshMemory(mem_mgr_, bvh_data_);
     }
+    // Free device memory for all collision candidate pairs
+    for (auto& entry : collision_candidates_to_data_) {
+      auto& cc = entry.second.first;
+      auto& ci = entry.second.second;
+      mem_mgr_.Free(cc.collision_counts);
+      // Free DeviceMeshPairCollidingIndices memory
+      if (ci.collision_indices_A != nullptr) {
+        mem_mgr_.Free(ci.collision_indices_A);
+        mem_mgr_.Free(ci.collision_indices_B);
+        ci.collision_indices_A = nullptr;
+        ci.collision_indices_B = nullptr;
+      }
+      // If you add more device allocations to DeviceMeshPairCollidingIndices,
+      // free them here
+    }
   }
 
   // Check if SYCL is available
@@ -353,7 +367,65 @@ class SyclProximityEngine::Impl {
   // Update collision candidates
   void UpdateCollisionCandidates(
       const std::vector<SortedPair<GeometryId>>& collision_candidates) {
-    collision_candidates_ = collision_candidates;
+    collision_candidates_.clear();
+    // Get a vector of sorted ids that we need to check collision for
+    for (const auto& pair : collision_candidates) {
+      auto itA = std::lower_bound(sorted_ids_.begin(), sorted_ids_.end(),
+                                  pair.first());
+      auto itB = std::lower_bound(sorted_ids_.begin(), sorted_ids_.end(),
+                                  pair.second());
+      // Demand that the found ID is valid and what is being looked for
+      DRAKE_DEMAND(itA != sorted_ids_.end() && *itA == pair.first());
+      DRAKE_DEMAND(itB != sorted_ids_.end() && *itB == pair.second());
+      uint32_t indexA =
+          static_cast<uint32_t>(std::distance(sorted_ids_.begin(), itA));
+      uint32_t indexB =
+          static_cast<uint32_t>(std::distance(sorted_ids_.begin(), itB));
+
+      // Can't have same ID
+      DRAKE_DEMAND(indexA != indexB);
+      if (indexA < indexB) {
+        collision_candidates_.push_back(std::make_pair(indexA, indexB));
+      } else {
+        collision_candidates_.push_back(std::make_pair(indexB, indexA));
+      }
+    }
+
+    // Create the map of collision_candidate pairs to a pair
+    // DeviceMeshACollisionCounters and DeviceMeshPairCollidingIndices.
+    // DeviceMeshACollisionCountes stores the number of collisions each element
+    // of pair.first has. DeviceMeshPairCollidingIndices stores the indices of
+    // the collisions - To save some memory, its memory is dynamically managed.
+    for (const auto& pair : collision_candidates_) {
+      if (collision_candidates_to_data_.find(key(pair.first, pair.second)) ==
+          collision_candidates_to_data_.end()) {
+        DeviceMeshACollisionCounters cc;
+        cc.collision_counts = mem_mgr_.AllocateDevice<uint32_t>(
+            mesh_data_.element_counts[pair.first]);
+        cc.total_collisions = 0;
+        cc.size_ = mesh_data_.element_counts[pair.first];
+        cc.last_element_collision_count = 0;
+        DeviceMeshPairCollidingIndices ci;
+        // Maximum number of checks
+        const uint32_t max_checks = mesh_data_.element_counts[pair.first] *
+                                    mesh_data_.element_counts[pair.second];
+        // Reasonable allocation
+        const uint32_t allocation_size =
+            std::max(1u, max_checks / 5);  // 20% of max
+        SyclMemoryHelper::AllocateDeviceMeshPairCollidingIndicesMemory(
+            mem_mgr_, ci, allocation_size);
+        collision_candidates_to_data_[key(pair.first, pair.second)] =
+            std::make_pair(cc, ci);
+      } else {
+        // Reset the total collision and last element collision count.
+        // Size of cc will stay the same and size of ci will be resized after
+        // computation of total collisions in BVHBroadPhase::BroadPhase.
+        auto& [cc, ci] =
+            collision_candidates_to_data_[key(pair.first, pair.second)];
+        cc.total_collisions = 0;
+        cc.last_element_collision_count = 0;
+      }
+    }
   }
 
   // Compute hydroelastic surfaces
@@ -603,12 +675,14 @@ class SyclProximityEngine::Impl {
       bvh_broad_phase_.build(mesh_data_, sorted_total_lower_,
                              sorted_total_upper_, bvh_data_, element_aabb_event,
                              mem_mgr_, q_device_);
+      // Building refits the BVH
+      bvh_broad_phase_.SetBVHRefitted(true);
     }
 
-    auto bvh_broad_phase_event = bvh_broad_phase_.BroadPhase(
+    // Blocking event call
+    bvh_broad_phase_.BroadPhase(
         mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
-        element_aabb_event, mem_mgr_, q_device_);
-    bvh_broad_phase_event.wait_and_throw();
+        element_aabb_event, collision_candidates_to_data_, mem_mgr_, q_device_);
 
     // =========================================
     // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
@@ -943,7 +1017,11 @@ class SyclProximityEngine::Impl {
   SyclTimingLogger timing_logger_;
 
   // The collision candidates.
-  std::vector<SortedPair<GeometryId>> collision_candidates_;
+  std::vector<std::pair<uint32_t, uint32_t>> collision_candidates_;
+  std::vector<GeometryId> sorted_ids_;
+  std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
+                                         DeviceMeshPairCollidingIndices>>
+      collision_candidates_to_data_;
 
   std::vector<Vector3<double>> sorted_total_lower_;
   std::vector<Vector3<double>> sorted_total_upper_;
@@ -1199,6 +1277,72 @@ std::vector<double> SyclProximityEngineAttorney::get_debug_polygon_vertices(
 DeviceBVHData SyclProximityEngineAttorney::get_bvh_data(
     SyclProximityEngine::Impl* impl) {
   return impl->bvh_data_;
+}
+
+std::unordered_map<
+    SortedPair<GeometryId>,
+    std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
+SyclProximityEngineAttorney::get_collision_candidates_to_data(
+    SyclProximityEngine::Impl* impl) {
+  // Create new map from the impl's map and copy over data to host
+  std::unordered_map<
+      SortedPair<GeometryId>,
+      std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
+      host_collision_candidates_to_data;
+  auto q = impl->q_device_;
+  for (auto& [key, value] : impl->collision_candidates_to_data_) {
+    auto& [cc, ci] = value;
+    HostMeshACollisionCounters host_cc;
+    host_cc.last_element_collision_count = cc.last_element_collision_count;
+    host_cc.total_collisions = cc.total_collisions;
+    host_cc.collision_counts.resize(cc.size_);
+
+    q.memcpy(host_cc.collision_counts.data(), cc.collision_counts,
+             cc.size_ * sizeof(uint32_t))
+        .wait();
+    HostMeshPairCollidingIndices host_ci;
+    host_ci.collision_indices_A.resize(ci.size_);
+    host_ci.collision_indices_B.resize(ci.size_);
+    q.memcpy(host_ci.collision_indices_A.data(), ci.collision_indices_A,
+             ci.size_ * sizeof(uint32_t))
+        .wait();
+    q.memcpy(host_ci.collision_indices_B.data(), ci.collision_indices_B,
+             ci.size_ * sizeof(uint32_t))
+        .wait();
+
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    GeometryId idA = impl->sorted_ids_[mesh_a];
+    GeometryId idB = impl->sorted_ids_[mesh_b];
+    SortedPair<GeometryId> sorted_pair(idA, idB);
+    host_collision_candidates_to_data[sorted_pair] = {host_cc, host_ci};
+  }
+  return host_collision_candidates_to_data;
+}
+
+HostMeshData SyclProximityEngineAttorney::get_mesh_data(
+    SyclProximityEngine::Impl* impl) {
+  uint32_t total_meshes = impl->num_geometries_;
+  uint32_t total_elements = impl->total_elements_;
+  HostMeshData host_mesh_data;
+  host_mesh_data.element_offsets.resize(total_meshes);
+  host_mesh_data.element_aabb_min_W.resize(total_elements);
+  host_mesh_data.element_aabb_max_W.resize(total_elements);
+  auto q = impl->q_device_;
+  q.memcpy(host_mesh_data.element_offsets.data(),
+           impl->mesh_data_.element_offsets, total_meshes * sizeof(uint32_t))
+      .wait();
+  q.memcpy(host_mesh_data.element_aabb_min_W.data(),
+           impl->mesh_data_.element_aabb_min_W,
+           total_elements * sizeof(Vector3<double>))
+      .wait();
+
+  q.memcpy(host_mesh_data.element_aabb_max_W.data(),
+           impl->mesh_data_.element_aabb_max_W,
+           total_elements * sizeof(Vector3<double>))
+      .wait();
+  host_mesh_data.total_elements = total_elements;
+
+  return host_mesh_data;
 }
 
 SyclMemoryManager SyclProximityEngineAttorney::get_mem_mgr(

@@ -101,6 +101,13 @@ struct DeviceMeshData {
   uint32_t total_vertices;
 };
 
+struct HostMeshData {
+  std::vector<uint32_t> element_offsets;
+  std::vector<Vector3<double>> element_aabb_min_W;
+  std::vector<Vector3<double>> element_aabb_max_W;
+  uint32_t total_elements;
+};
+
 // Structure to hold collision detection memory
 struct DeviceCollisionData {
   // Broad phase data
@@ -222,6 +229,31 @@ struct DeviceBVHData {
   uint32_t total_nodes;
 };
 
+struct DeviceMeshPairCollidingIndices {
+  uint32_t capacity_ = 0;
+  uint32_t size_ = 0;
+  uint32_t* collision_indices_A = nullptr;
+  uint32_t* collision_indices_B = nullptr;
+};
+
+struct DeviceMeshACollisionCounters {
+  uint32_t* collision_counts = nullptr;
+  uint32_t size_ = 0;
+  uint32_t total_collisions = 0;
+  uint32_t last_element_collision_count = 0;
+};
+
+struct HostMeshPairCollidingIndices {
+  std::vector<uint32_t> collision_indices_A;
+  std::vector<uint32_t> collision_indices_B;
+};
+
+struct HostMeshACollisionCounters {
+  std::vector<uint32_t> collision_counts;
+  uint32_t total_collisions = 0;
+  uint32_t last_element_collision_count = 0;
+};
+
 class SyclMemoryHelper {
  public:
   static void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
@@ -264,6 +296,17 @@ class SyclMemoryHelper {
   static void AllocateCompactPolygonMemory(SyclMemoryManager& mem_mgr,
                                            DevicePolygonData& polygon_data,
                                            uint32_t num_geometries);
+
+  static void AllocateDeviceMeshPairCollidingIndicesMemory(
+      SyclMemoryManager& mem_mgr,
+      DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
+      uint32_t new_size);
+
+  static void ResizeDeviceMeshPairCollidingIndicesMemory(
+      SyclMemoryManager& mem_mgr,
+      DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
+      uint32_t new_size);
+
   static void FreeMeshMemory(SyclMemoryManager& mem_mgr,
                              DeviceMeshData& mesh_data);
   static void FreeBVHSingleMeshAndAllMeshMemory(SyclMemoryManager& mem_mgr,

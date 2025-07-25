@@ -51,6 +51,7 @@ drake_cc_library(
         "-Wno-deprecated-copy-with-user-provided-copy",
         "-Wno-sign-compare",
         "-Wno-unused-but-set-variable",
+        "-Wno-c++23-lambda-attributes"
     ],
     deps = [
         "//geometry:geometry_ids",
@@ -82,6 +83,7 @@ drake_cc_library(
         "-Wno-deprecated-copy-with-user-provided-copy",
         "-Wno-sign-compare",
         "-Wno-unused-but-set-variable",
+        "-Wno-c++23-lambda-attributes"
     ],
     linkopts = [
         "-fsycl",

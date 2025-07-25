@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,13 +84,15 @@ class BVHBroadPhase {
   BVHBroadPhase() = default;
   ~BVHBroadPhase() = default;
 
-  sycl::event BroadPhase(const DeviceMeshData& mesh_data,
-                         const std::vector<Vector3<double>>& sorted_total_lower,
-                         const std::vector<Vector3<double>>& sorted_total_upper,
-                         DeviceBVHData& bvh_data,
-                         sycl::event& element_aabb_event,
-                         SyclMemoryManager& memory_manager,
-                         sycl::queue& q_device);
+  void BroadPhase(
+      const DeviceMeshData& mesh_data,
+      const std::vector<Vector3<double>>& sorted_total_lower,
+      const std::vector<Vector3<double>>& sorted_total_upper,
+      DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
+      std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
+                                             DeviceMeshPairCollidingIndices>>&
+          collision_candidates_to_data,
+      SyclMemoryManager& memory_manager, sycl::queue& q_device);
   // Construct and return BVH for all meshes in the scene
   // They will be indexed by same order of sorted_geometry ids
   // q is waited on becaue memory needs to be released
@@ -100,6 +103,7 @@ class BVHBroadPhase {
              SyclMemoryManager& memory_manager, sycl::queue& q_device);
   bool IsBVHBuilt() const { return bvh_built_; }
   bool IsBVHRefitted() const { return bvh_refitted_; }
+  void SetBVHRefitted(bool refitted) { bvh_refitted_ = refitted; }
 
  private:
   // BVH construction parameters
@@ -110,9 +114,23 @@ class BVHBroadPhase {
   sycl::event refit(const DeviceMeshData& mesh_data, DeviceBVHData& bvh_data,
                     sycl::event& element_aabb_event,
                     SyclMemoryManager& memory_manager, sycl::queue& q_device);
+  sycl::event ComputeCollisionCounts(const uint32_t mesh_a,
+                                     const uint32_t mesh_b,
+                                     const DeviceBVHData& bvh_data,
+                                     const DeviceMeshData& mesh_data,
+                                     DeviceMeshACollisionCounters& cc,
+                                     sycl::event& refit_event,
+                                     sycl::queue& q_device);
+  sycl::event ComputeCollisionPairs(const uint32_t mesh_a,
+                                    const uint32_t mesh_b,
+                                    const DeviceBVHData& bvh_data,
+                                    const DeviceMeshData& mesh_data,
+                                    DeviceMeshACollisionCounters& cc,
+                                    DeviceMeshPairCollidingIndices& ci,
+                                    sycl::queue& q_device);
 
   bool bvh_built_ = false;
-  bool bvh_refitted_ = true;
+  bool bvh_refitted_ = false;
 };
 
 // Attorney class for accessing and inspecting SYCL BVH data in tests.
@@ -130,6 +148,10 @@ class SyclBvhAttorney {
     int num_nodes;
     int num_leaf_nodes;
     // Add other fields as needed (e.g., primitive_indices if required).
+  };
+
+  struct HostIndicesAll {
+    std::vector<uint32_t> indicesAll;
   };
 
   // Copies the BVH for a specific mesh_id from device to host.
@@ -176,6 +198,18 @@ class SyclBvhAttorney {
     q.wait_and_throw();
 
     return host_bvh;
+  }
+
+  static HostIndicesAll GetHostIndicesAll(const DeviceBVHData& device_data,
+                                          uint32_t total_elements,
+                                          SyclMemoryManager& mem_mgr,
+                                          sycl::queue& q) {
+    HostIndicesAll host_indices_all;
+    host_indices_all.indicesAll.resize(total_elements);
+    mem_mgr.CopyToHost(host_indices_all.indicesAll.data(),
+                       device_data.indicesAll, total_elements);
+    q.wait_and_throw();
+    return host_indices_all;
   }
 
   // Computes the height (max depth) of the tree starting from root.
@@ -248,6 +282,16 @@ class SyclBvhAttorney {
       ++histogram[d];
     }
     PrintHistogramJSON(histogram, filepath);
+  }
+
+  // Prints the bounding boxes of each node in the BVH tree to std::cout,
+  // traversing from root downwards using BFS.
+  static void PrintNodeBoundingBoxes(const HostBVH& host_bvh,
+                                     const HostIndicesAll& host_indices_all,
+                                     const HostMeshData& mesh_data,
+                                     const int sorted_mesh_id) {
+    PrintNodeBoundingBoxesBFS(host_bvh, host_bvh.root_index, host_indices_all,
+                              mesh_data, sorted_mesh_id);
   }
 
  private:
@@ -356,8 +400,8 @@ class SyclBvhAttorney {
 
     if (lower.b == 1) {
       // leafs : Check the maximum primitves per leaf
-      // get their AABBs and test if the node is the union of all the primitive
-      // AABBs
+      // get their AABBs and test if the node is the union of all the
+      // primitive AABBs
       const unsigned int start_index = lower.i;
       const unsigned int end_index = upper.i;
       const unsigned int num_primitives = end_index - start_index;
@@ -464,6 +508,62 @@ class SyclBvhAttorney {
     file << "  ]" << std::endl;
     file << "}" << std::endl;
     file.close();
+  }
+
+  static void PrintNodeBoundingBoxesBFS(const HostBVH& host_bvh, int root_index,
+                                        const HostIndicesAll& host_indices_all,
+                                        const HostMeshData& mesh_data,
+                                        const int sorted_mesh_id) {
+    if (root_index < 0 || root_index >= host_bvh.max_nodes) {
+      return;
+    }
+    const int element_offset = mesh_data.element_offsets[sorted_mesh_id];
+    std::vector<bool> visited(host_bvh.max_nodes, false);
+    std::queue<int> q;
+    q.push(root_index);
+    visited[root_index] = true;
+    while (!q.empty()) {
+      int node_index = q.front();
+      q.pop();
+      const auto& lower = host_bvh.node_lowers[node_index];
+      const auto& upper = host_bvh.node_uppers[node_index];
+      std::cout << "Node " << node_index << ": "
+                << "Lower = (" << lower.x << ", " << lower.y << ", " << lower.z
+                << ") "
+                << "Upper = (" << upper.x << ", " << upper.y << ", " << upper.z
+                << ")\n";
+      if (lower.b != 1) {  // Not a leaf
+        if (lower.i >= 0 && lower.i < host_bvh.max_nodes && !visited[lower.i]) {
+          q.push(lower.i);
+          visited[lower.i] = true;
+        }
+        int right_index = host_bvh.node_uppers[node_index].i;
+        if (right_index >= 0 && right_index < host_bvh.max_nodes &&
+            !visited[right_index]) {
+          q.push(right_index);
+          visited[right_index] = true;
+        }
+      } else {
+        // Leaf node
+        const unsigned int start_index = lower.i;
+        const unsigned int end_index = upper.i;
+        for (unsigned int i = start_index; i < end_index; ++i) {
+          const unsigned int local_primitive_index =
+              host_indices_all.indicesAll[i + element_offset];
+          const unsigned int global_primitive_index =
+              local_primitive_index + element_offset;
+          const Vector3<double> lower_W =
+              mesh_data.element_aabb_min_W[global_primitive_index];
+          const Vector3<double> upper_W =
+              mesh_data.element_aabb_max_W[global_primitive_index];
+          std::cout << "Primitive " << global_primitive_index << ": "
+                    << "Lower = (" << lower_W[0] << ", " << lower_W[1] << ", "
+                    << lower_W[2] << ") "
+                    << "Upper = (" << upper_W[0] << ", " << upper_W[1] << ", "
+                    << upper_W[2] << ")\n";
+        }
+      }
+    }
   }
 };
 }  // namespace sycl_impl
