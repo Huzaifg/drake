@@ -127,13 +127,10 @@ GTEST_TEST(SPETest, SingleMesh) {
   drake::geometry::internal::sycl_impl::SyclProximityEngine engine(
       soft_geometries, total_lower, total_upper);
 
+  // Should not error out and just return early as num_geometries_ < 2
   std::unordered_map<GeometryId, RigidTransformd> X_WGs{
       {id, RigidTransformd::Identity()}};
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
-
-  // Get the total checks - this should be 0
-  auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 0);
 }
 
 GTEST_TEST(SPETest, TwoMeshesColliding) {
@@ -162,11 +159,7 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
   engine.UpdateCollisionCandidates(collision_candidates);
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
-  // Get the total checks - This should be 4 + 0 = 4
-  // Geometry A has 2 other elements to check its 2 elements against
-  // Geometry B has nothing to check due to symmetry
   auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 4);
 
   auto verticies_from_meshA = geometryA.mesh().vertices();
   auto verticies_from_meshB = geometryB.mesh().vertices();
@@ -207,8 +200,6 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
     EXPECT_EQ(elements_host[i], elements_of_both_meshes[i]);
   }
 
-  // Collision filter should be [0 0 1 0] since element 1 of A is colliding with
-  // element 0 of B
   auto collision_candidates_to_data =
       SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
   // loop over CPU collision candidates and just print global collision indices
@@ -221,13 +212,6 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
       EXPECT_EQ(ci.collision_indices_A[i], 1);
       EXPECT_EQ(ci.collision_indices_B[i], 2);
     }
-  }
-
-  std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-  std::vector<uint8_t> expected_collision_filter{0, 0, 1, 0};
-  for (uint32_t i = 0; i < 4; ++i) {
-    EXPECT_EQ(collision_filter[i], expected_collision_filter[i]);
   }
 
   // Move geometries closer so that all elements are colliding and check
@@ -248,19 +232,6 @@ GTEST_TEST(SPETest, TwoMeshesColliding) {
     EXPECT_EQ(ci.collision_indices_A[2], 1);
     EXPECT_EQ(ci.collision_indices_B[2], 3);
   }
-
-  collision_filter = SyclProximityEngineAttorney::get_collision_filter(impl);
-  // Element 0 of A collides with element 0 of B
-  // Element 1 of A collides with element 0 and 1 of B
-  expected_collision_filter = {1, 0, 1, 1};
-  for (uint32_t i = 0; i < 4; ++i) {
-    EXPECT_EQ(collision_filter[i], expected_collision_filter[i]);
-  }
-
-  std::vector<uint32_t> prefix_sum =
-      SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<uint32_t> expected_prefix_sum = {0, 1, 1, 2};
-  EXPECT_EQ(prefix_sum, expected_prefix_sum);
 }
 
 GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
@@ -293,13 +264,7 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
 
   auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
-  // Get the total checks
   auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  // Geom A checks 2 elements against 4 = 8 checks
-  // Geom B checks 2 elements against 2 = 4 checks
-  // Geom C checks none
-  // Total = 12 checks
-  EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 12);
 
   auto collision_candidates_to_data =
       SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
@@ -316,27 +281,6 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
     } else if (candidate == SortedPair<GeometryId>(idA, idC)) {
       EXPECT_EQ(cc.total_collisions, 0);
     }
-  }
-
-  // Collision filter check
-  std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-
-  std::vector<uint8_t> expected_collision_filter{0, 0, 0, 0, 1, 0,
-                                                 0, 0, 0, 0, 1, 0};
-  for (uint32_t i = 0; i < 12; ++i) {
-    EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
-  }
-
-  // check compacted narrow_phase_check_indices_
-  std::vector<uint32_t> narrow_phase_check_indices =
-      SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
-  std::vector<uint32_t> expected_narrow_phase_check_indices{4, 10};
-  ASSERT_EQ(narrow_phase_check_indices.size(),
-            expected_narrow_phase_check_indices.size());
-  for (uint32_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
-    EXPECT_EQ(narrow_phase_check_indices[i],
-              expected_narrow_phase_check_indices[i]);
   }
 
   // Move meshes closer so all elements collide
@@ -374,32 +318,6 @@ GTEST_TEST(SPETest, ThreeMeshesAllColliding) {
       EXPECT_EQ(ci.collision_indices_A[2], 3);
       EXPECT_EQ(ci.collision_indices_B[2], 5);
     }
-  }
-
-  collision_filter = SyclProximityEngineAttorney::get_collision_filter(impl);
-  // With meshes closer, more elements should be colliding
-  expected_collision_filter = {1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1};
-  for (uint32_t i = 0; i < 12; ++i) {
-    EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
-  }
-
-  std::vector<uint32_t> prefix_sum =
-      SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<uint32_t> expected_prefix_sum(expected_collision_filter.size());
-  std::exclusive_scan(expected_collision_filter.begin(),
-                      expected_collision_filter.end(),
-                      expected_prefix_sum.begin(), 0);
-  EXPECT_EQ(prefix_sum, expected_prefix_sum);
-
-  // check compacted narrow_phase_check_indices_
-  narrow_phase_check_indices =
-      SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
-  expected_narrow_phase_check_indices = {0, 2, 4, 5, 6, 7, 8, 10, 11};
-  ASSERT_EQ(narrow_phase_check_indices.size(),
-            expected_narrow_phase_check_indices.size());
-  for (uint32_t i = 0; i < narrow_phase_check_indices.size(); ++i) {
-    EXPECT_EQ(narrow_phase_check_indices[i],
-              expected_narrow_phase_check_indices[i]);
   }
 }
 
@@ -440,12 +358,6 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
 
   // Get the total checks
   auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  // Geom A checks 2 elements against 6 = 12 checks
-  // Geom B checks 2 elements against 4 = 8 checks
-  // Geom C checks 2 elements against 2 = 4 checks
-  // Geom D checks none
-  // Total = 24 checks
-  EXPECT_EQ(SyclProximityEngineAttorney::get_total_checks(impl), 24);
 
   auto collision_candidates_to_data =
       SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
@@ -470,20 +382,6 @@ GTEST_TEST(SPETest, FourMeshAllColliding) {
       EXPECT_EQ(ci.collision_indices_A[0], 5);
       EXPECT_EQ(ci.collision_indices_B[0], 6);
     }
-  }
-
-  // Collision filter check
-  std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-
-  // Expected pattern: only adjacent meshes should be colliding
-  std::vector<uint8_t> expected_collision_filter{
-      0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,  // A checks
-      0, 0, 0, 0, 1, 0, 0, 0,              // B checks
-      0, 0, 1, 0};                         // C checks
-
-  for (uint32_t i = 0; i < 24; ++i) {
-    EXPECT_EQ(expected_collision_filter[i], collision_filter[i]);
   }
 }
 
@@ -669,60 +567,6 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
     EXPECT_LE(intersection_widths.minCoeff(), 0);
   }
 
-  // Collision filter check
-  const std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-
-  const int total_checks = SyclProximityEngineAttorney::get_total_checks(impl);
-
-  ASSERT_EQ(total_checks, ssize(expected_filter));
-
-  // Due to numerical tolerances in the CPU BVH leaf overlap test, there will
-  // be false positives in the cpu filter. Therefore, we check that the sycl
-  // filter is a subset of the cpu filter. Later on, we will verify that the
-  // cpu narrow phase filters these out using true geometric quantites.
-  std::vector<int> mismatch_indices;
-  for (int i = 0; i < ssize(expected_filter); ++i) {
-    EXPECT_LE(collision_filter[i], expected_filter[i]);
-    if (collision_filter[i] < expected_filter[i]) {
-      mismatch_indices.push_back(i);
-    }
-  }
-
-  for (int i : mismatch_indices) {
-    int eA = i / soft_geometryB.mesh().num_elements();
-    int eB = i - eA * soft_geometryB.mesh().num_elements();
-    const auto [minA, maxA] =
-        CalcAabb(X_WA * soft_geometryA.mesh().vertex(
-                            soft_geometryA.mesh().element(eA).vertex(0)),
-                 X_WA * soft_geometryA.mesh().vertex(
-                            soft_geometryA.mesh().element(eA).vertex(1)),
-                 X_WA * soft_geometryA.mesh().vertex(
-                            soft_geometryA.mesh().element(eA).vertex(2)),
-                 X_WA * soft_geometryA.mesh().vertex(
-                            soft_geometryA.mesh().element(eA).vertex(3)));
-    const auto [minB, maxB] =
-        CalcAabb(X_WB * soft_geometryB.mesh().vertex(
-                            soft_geometryB.mesh().element(eB).vertex(0)),
-                 X_WB * soft_geometryB.mesh().vertex(
-                            soft_geometryB.mesh().element(eB).vertex(1)),
-                 X_WB * soft_geometryB.mesh().vertex(
-                            soft_geometryB.mesh().element(eB).vertex(2)),
-                 X_WB * soft_geometryB.mesh().vertex(
-                            soft_geometryB.mesh().element(eB).vertex(3)));
-    // Compute the bounds of the intersection of the Aabbs. The intersection
-    // is empty if at least one of the dimensions has negative width.
-    const Vector3d intersection_min = minA.cwiseMax(minB);
-    const Vector3d intersection_max = maxA.cwiseMin(maxB);
-    const Vector3d intersection_widths = intersection_max - intersection_min;
-    EXPECT_LT(intersection_widths.minCoeff(), 0);
-  }
-
-  // Set the expected filter equal to test the prefix sum.
-  for (int i : mismatch_indices) {
-    expected_filter[i] = 0;
-  }
-
   std::unique_ptr<PolygonSurfaceMesh<double>> contact_surface;
   std::unique_ptr<PolygonSurfaceMeshFieldLinear<double, double>>
       contact_pressure;
@@ -737,13 +581,6 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
     EXPECT_EQ(nullptr, contact_surface.get());
     return;
   }
-
-  std::vector<uint32_t> prefix_sum =
-      SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<uint32_t> expected_prefix_sum(expected_filter.size());
-  std::exclusive_scan(expected_filter.begin(), expected_filter.end(),
-                      expected_prefix_sum.begin(), 0);
-  EXPECT_EQ(prefix_sum, expected_prefix_sum);
 
   // Get the narrow phase check indices
   const std::vector<uint32_t> narrow_phase_check_indices =
@@ -1042,13 +879,9 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   const int num_A = soft_geometryA.mesh().num_elements();
   const int num_B = soft_geometryB.mesh().num_elements();
   const int num_C = soft_geometryC.mesh().num_elements();
-  fmt::print("Number of elements in geometry A: {}\n", num_A);
-  fmt::print("Number of elements in geometry B: {}\n", num_B);
-  fmt::print("Number of elements in geometry C: {}\n", num_C);
-
-  const int AB_size = num_A * num_B;
-  const int AC_size = num_A * num_C;
-  const int BC_size = num_B * num_C;
+  // fmt::print("Number of elements in geometry A: {}\n", num_A);
+  // fmt::print("Number of elements in geometry B: {}\n", num_B);
+  // fmt::print("Number of elements in geometry C: {}\n", num_C);
 
   // Expected candidate tetrahedra
   std::unordered_map<SortedPair<GeometryId>, std::vector<std::pair<int, int>>>
@@ -1067,21 +900,6 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
     expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereB_id,
                                                          sphereC_id)]
         .emplace_back(eB + num_A, eC + num_A + num_B);
-  }
-
-  std::vector<uint8_t> expected_filter(AB_size + AC_size + BC_size, 0);
-
-  for (auto [eA, eB] : candidate_tetrahedra_AB) {
-    const int i = eA * (num_B + num_C) + eB;
-    expected_filter[i] = 1;
-  }
-  for (auto [eA, eC] : candidate_tetrahedra_AC) {
-    const int i = eA * (num_B + num_C) + eC + num_B;
-    expected_filter[i] = 1;
-  }
-  for (auto [eB, eC] : candidate_tetrahedra_BC) {
-    const int i = eB * num_C + eC + (AB_size + AC_size);
-    expected_filter[i] = 1;
   }
 
   auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
@@ -1151,35 +969,35 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   }
 
   // Tree stats
-  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
-  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
-  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
-  auto host_mesh_data = SyclProximityEngineAttorney::get_mesh_data(impl);
-  auto host_indices_all = SyclBvhAttorney::GetHostIndicesAll(
-      bvh_data, host_mesh_data.total_elements, mem_mgr, q_device);
-  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
-    fmt::print("Mesh {}\n", i);
-    const auto host_bvh =
-        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
-    std::string filepath = fmt::format("histogram_{}.json", i);
-    const auto [height, num_leaves, balance_factor, average_depth,
-                bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
-    fmt::print(
-        "Mesh {}: height: {}, num_leaves: {}, balance_factor: {}, "
-        "average_depth: {}, bounds_valid: {}\n",
-        i, height, num_leaves, balance_factor, average_depth, bounds_valid);
-  }
+  // const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
+  // auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
+  // auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
+  // auto host_mesh_data = SyclProximityEngineAttorney::get_mesh_data(impl);
+  // auto host_indices_all = SyclBvhAttorney::GetHostIndicesAll(
+  //     bvh_data, host_mesh_data.total_elements, mem_mgr, q_device);
+  // for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+  //   fmt::print("Mesh {}\n", i);
+  //   const auto host_bvh =
+  //       SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+  //   std::string filepath = fmt::format("histogram_{}.json", i);
+  //   const auto [height, num_leaves, balance_factor, average_depth,
+  //               bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
+  //   fmt::print(
+  //       "Mesh {}: height: {}, num_leaves: {}, balance_factor: {}, "
+  //       "average_depth: {}, bounds_valid: {}\n",
+  //       i, height, num_leaves, balance_factor, average_depth, bounds_valid);
+  // }
 
-  fmt::print("Tree AABBs of all internal nodes\n");
+  // fmt::print("Tree AABBs of all internal nodes\n");
 
-  // Tree AABBs of all internal nodes
-  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
-    fmt::print("Mesh {}\n", i);
-    const auto host_bvh =
-        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
-    SyclBvhAttorney::PrintNodeBoundingBoxes(host_bvh, host_indices_all,
-                                            host_mesh_data, i);
-  }
+  // // Tree AABBs of all internal nodes
+  // for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+  //   fmt::print("Mesh {}\n", i);
+  //   const auto host_bvh =
+  //       SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+  //   SyclBvhAttorney::PrintNodeBoundingBoxes(host_bvh, host_indices_all,
+  //                                           host_mesh_data, i);
+  // }
 
   // Verify that each of the mismatches is TRULY a false positive from the CPU
   // broadphase. To do this, we compute the Aabb's of the element pairs in the
@@ -1274,131 +1092,11 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
     EXPECT_LE(intersection_widths.minCoeff(), 0);
   }
 
-  // Collision filter check
-  const std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-
-  const int total_checks = SyclProximityEngineAttorney::get_total_checks(impl);
-
-  ASSERT_EQ(total_checks, ssize(expected_filter));
-
-  // Due to numerical tolerances in the CPU BVH leaf overlap test, there will
-  // be false positives in the cpu filter. Therefore, we check that the sycl
-  // filter is a subset of the cpu filter. Later on, we will verify that the
-  // cpu narrow phase filters these out using true geometric quantites.
-  std::vector<int> mismatch_indices;
-  for (int i = 0; i < ssize(expected_filter); ++i) {
-    EXPECT_LE(collision_filter[i], expected_filter[i]);
-    if (collision_filter[i] < expected_filter[i]) {
-      mismatch_indices.push_back(i);
-    }
-  }
-
-  for (int i : mismatch_indices) {
-    Vector3d min0, max0, min1, max1;
-
-    if (i > (AB_size + AC_size)) {
-      int eB = (i - (AB_size + AC_size)) / num_C;
-      int eC = (i - (AB_size + AC_size)) - eB * num_C;
-      std::tie(min0, max0) =
-          CalcAabb(X_WB * soft_geometryB.mesh().vertex(
-                              soft_geometryB.mesh().element(eB).vertex(0)),
-                   X_WB * soft_geometryB.mesh().vertex(
-                              soft_geometryB.mesh().element(eB).vertex(1)),
-                   X_WB * soft_geometryB.mesh().vertex(
-                              soft_geometryB.mesh().element(eB).vertex(2)),
-                   X_WB * soft_geometryB.mesh().vertex(
-                              soft_geometryB.mesh().element(eB).vertex(3)));
-      std::tie(min1, max1) =
-          CalcAabb(X_WC * soft_geometryC.mesh().vertex(
-                              soft_geometryC.mesh().element(eC).vertex(0)),
-                   X_WC * soft_geometryC.mesh().vertex(
-                              soft_geometryC.mesh().element(eC).vertex(1)),
-                   X_WC * soft_geometryC.mesh().vertex(
-                              soft_geometryC.mesh().element(eC).vertex(2)),
-                   X_WC * soft_geometryC.mesh().vertex(
-                              soft_geometryC.mesh().element(eC).vertex(3)));
-    } else {
-      int eA = i / (num_B + num_C);
-      int eB = i - eA * (num_B + num_C);
-      std::tie(min0, max0) =
-          CalcAabb(X_WA * soft_geometryA.mesh().vertex(
-                              soft_geometryA.mesh().element(eA).vertex(0)),
-                   X_WA * soft_geometryA.mesh().vertex(
-                              soft_geometryA.mesh().element(eA).vertex(1)),
-                   X_WA * soft_geometryA.mesh().vertex(
-                              soft_geometryA.mesh().element(eA).vertex(2)),
-                   X_WA * soft_geometryA.mesh().vertex(
-                              soft_geometryA.mesh().element(eA).vertex(3)));
-      if (eB > num_B) {
-        int eC = eB - num_B;
-        std::tie(min1, max1) =
-            CalcAabb(X_WC * soft_geometryC.mesh().vertex(
-                                soft_geometryC.mesh().element(eC).vertex(0)),
-                     X_WC * soft_geometryC.mesh().vertex(
-                                soft_geometryC.mesh().element(eC).vertex(1)),
-                     X_WC * soft_geometryC.mesh().vertex(
-                                soft_geometryC.mesh().element(eC).vertex(2)),
-                     X_WC * soft_geometryC.mesh().vertex(
-                                soft_geometryC.mesh().element(eC).vertex(3)));
-      } else {
-        std::tie(min1, max1) =
-            CalcAabb(X_WB * soft_geometryB.mesh().vertex(
-                                soft_geometryB.mesh().element(eB).vertex(0)),
-                     X_WB * soft_geometryB.mesh().vertex(
-                                soft_geometryB.mesh().element(eB).vertex(1)),
-                     X_WB * soft_geometryB.mesh().vertex(
-                                soft_geometryB.mesh().element(eB).vertex(2)),
-                     X_WB * soft_geometryB.mesh().vertex(
-                                soft_geometryB.mesh().element(eB).vertex(3)));
-      }
-    }
-    // Compute the bounds of the intersection of the Aabbs. The intersection
-    // is empty if at least one of the dimensions has negative width.
-    const Vector3d intersection_min = min0.cwiseMax(min1);
-    const Vector3d intersection_max = max0.cwiseMin(max1);
-    const Vector3d intersection_widths = intersection_max - intersection_min;
-    EXPECT_LT(intersection_widths.minCoeff(), 0);
-  }
-
-  // Set the expected filter equal to test the prefix sum.
-  for (int i : mismatch_indices) {
-    expected_filter[i] = 0;
-  }
-
-  std::vector<uint32_t> prefix_sum =
-      SyclProximityEngineAttorney::get_prefix_sum(impl);
-  std::vector<uint32_t> expected_prefix_sum(expected_filter.size());
-  std::exclusive_scan(expected_filter.begin(), expected_filter.end(),
-                      expected_prefix_sum.begin(), 0);
-  EXPECT_EQ(prefix_sum, expected_prefix_sum);
-
   // Get polygon areas and centroids
   const std::vector<double> polygon_areas =
       SyclProximityEngineAttorney::get_polygon_areas(impl);
   const std::vector<Vector3d> polygon_centroids =
       SyclProximityEngineAttorney::get_polygon_centroids(impl);
-
-  // Get the narrow phase check indices
-  const std::vector<uint32_t> narrow_phase_check_indices =
-      SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
-
-  // Construct the element id pairs correspinding to each narrow_phase check
-  // These id pairs will map to the global index that was used in the
-  // collision_filter_ (row and column)
-  std::vector<std::pair<int, int>> element_id_pairs;
-  for (uint32_t i = 0; i < polygon_areas.size(); ++i) {
-    uint32_t global_check_index = narrow_phase_check_indices[i];
-    if (global_check_index > static_cast<uint32_t>(AB_size + AC_size)) {
-      int eB = (global_check_index - (AB_size + AC_size)) / num_C;
-      int eC = (global_check_index - (AB_size + AC_size)) - eB * num_C;
-      element_id_pairs.emplace_back(eB, eC);
-    } else {
-      int eA = global_check_index / (num_B + num_C);
-      int eB = global_check_index - eA * (num_B + num_C);
-      element_id_pairs.emplace_back(eA, eB);
-    }
-  }
 }
 
 GTEST_TEST(SPETest, FourSpheresColliding) {
@@ -1576,41 +1274,39 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
   const int num_C = soft_geometryC.mesh().num_elements();
   const int num_D = soft_geometryD.mesh().num_elements();
 
-  const int AB_size = num_A * num_B;
-  const int AC_size = num_A * num_C;
-  const int AD_size = num_A * num_D;
-  const int BC_size = num_B * num_C;
-  const int BD_size = num_B * num_D;
-  const int CD_size = num_C * num_D;
-
-  std::vector<uint8_t> expected_filter(
-      AB_size + AC_size + AD_size + BC_size + BD_size + CD_size, 0);
-
+  // Expected candidate tetrahedra
+  std::unordered_map<SortedPair<GeometryId>, std::vector<std::pair<int, int>>>
+      expected_candidate_tetrahedra;
   for (auto [eA, eB] : candidate_tetrahedra_AB) {
-    const int i = eA * (num_B + num_C + num_D) + eB;
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereB_id)]
+        .emplace_back(eA, eB + num_A);
   }
   for (auto [eA, eC] : candidate_tetrahedra_AC) {
-    const int i = eA * (num_B + num_C + num_D) + eC + num_B;
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereC_id)]
+        .emplace_back(eA, eC + num_A + num_B);
   }
   for (auto [eA, eD] : candidate_tetrahedra_AD) {
-    const int i = eA * (num_B + num_C + num_D) + eD + num_B + num_C;
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereA_id,
+                                                         sphereD_id)]
+        .emplace_back(eA, eD + num_A + num_B + num_C);
   }
   for (auto [eB, eC] : candidate_tetrahedra_BC) {
-    const int i = eB * (num_C + num_D) + eC + (AB_size + AC_size + AD_size);
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereB_id,
+                                                         sphereC_id)]
+        .emplace_back(eB + num_A, eC + num_A + num_B);
   }
+
   for (auto [eB, eD] : candidate_tetrahedra_BD) {
-    const int i =
-        eB * (num_C + num_D) + eD + num_C + (AB_size + AC_size + AD_size);
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereB_id,
+                                                         sphereD_id)]
+        .emplace_back(eB + num_A, eD + num_A + num_B + num_C);
   }
   for (auto [eC, eD] : candidate_tetrahedra_CD) {
-    const int i =
-        eC * num_D + eD + (AB_size + AC_size + AD_size + BC_size + BD_size);
-    expected_filter[i] = 1;
+    expected_candidate_tetrahedra[SortedPair<GeometryId>(sphereC_id,
+                                                         sphereD_id)]
+        .emplace_back(eC + num_A + num_B, eD + num_A + num_B + num_C);
   }
 
   auto [minA, maxA] = ComputeTotalBounds(TransformMesh(soft_geometryA, X_WA));
@@ -1643,33 +1339,146 @@ GTEST_TEST(SPETest, FourSpheresColliding) {
       {sphereB_id, X_WB},
       {sphereC_id, X_WC},
       {sphereD_id, X_WD}};
-  engine.UpdateCollisionCandidates(
-      {SortedPair<GeometryId>(sphereA_id, sphereB_id),
-       SortedPair<GeometryId>(sphereA_id, sphereC_id),
-       SortedPair<GeometryId>(sphereB_id, sphereC_id)});
+  const std::vector<SortedPair<GeometryId>> collision_candidates{
+      SortedPair<GeometryId>(sphereA_id, sphereB_id),
+      SortedPair<GeometryId>(sphereA_id, sphereC_id),
+      SortedPair<GeometryId>(sphereA_id, sphereD_id),
+      SortedPair<GeometryId>(sphereB_id, sphereC_id),
+      SortedPair<GeometryId>(sphereB_id, sphereD_id),
+      SortedPair<GeometryId>(sphereC_id, sphereD_id)};
+  engine.UpdateCollisionCandidates(collision_candidates);
   const auto surfaces = engine.ComputeSYCLHydroelasticSurface(X_WGs);
 
   // Get the total checks
   const auto impl = SyclProximityEngineAttorney::get_impl(engine);
 
-  // Collision filter check
-  const std::vector<uint8_t> collision_filter =
-      SyclProximityEngineAttorney::get_collision_filter(impl);
-
-  const int total_checks = SyclProximityEngineAttorney::get_total_checks(impl);
-
-  ASSERT_EQ(total_checks, ssize(expected_filter));
-
-  // Due to numerical tolerances in the CPU BVH leaf overlap test, there will
-  // be false positives in the cpu filter. Therefore, we check that the sycl
-  // filter is a subset of the cpu filter. Later on, we will verify that the
-  // cpu narrow phase filters these out using true geometric quantites.
-  std::vector<int> mismatch_indices;
-  for (int i = 0; i < ssize(expected_filter); ++i) {
-    EXPECT_LE(collision_filter[i], expected_filter[i]);
-    if (collision_filter[i] < expected_filter[i]) {
-      mismatch_indices.push_back(i);
+  auto collision_candidates_to_data =
+      SyclProximityEngineAttorney::get_collision_candidates_to_data(impl);
+  // Package obtained collisions as pair vector
+  std::vector<std::pair<int, int>> obtained_collisions;
+  std::vector<std::pair<int, int>> mismatch_pairs;
+  // Compare obtained collision pairs with expected from Drake
+  for (auto candidate : collision_candidates) {
+    auto [cc, ci] = collision_candidates_to_data[candidate];
+    auto ExpMeshA_indices = expected_candidate_tetrahedra[candidate];
+    fmt::print("Obtained collisions {} for geometry {} and {}\n",
+               cc.total_collisions, candidate.first(), candidate.second());
+    fmt::print("Expected collisions {} for geometry {} and {}\n",
+               ExpMeshA_indices.size(), candidate.first(), candidate.second());
+    // For each candidate on the GPU, we look for the corresponding
+    // candidate on the CPU. We should expect to find all.
+    for (uint32_t i = 0; i < cc.total_collisions; ++i) {
+      obtained_collisions.emplace_back(
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      auto it = std::find(
+          ExpMeshA_indices.begin(), ExpMeshA_indices.end(),
+          std::make_pair(static_cast<int>(ci.collision_indices_A[i]),
+                         static_cast<int>(ci.collision_indices_B[i])));
+      EXPECT_NE(it, ExpMeshA_indices.end());
     }
+    // Inverse check: Find all the candidates found on the CPU but not on the
+    // GPU
+    for (auto [eA, eB] : ExpMeshA_indices) {
+      auto it = std::find(obtained_collisions.begin(),
+                          obtained_collisions.end(), std::make_pair(eA, eB));
+      if (it == obtained_collisions.end()) {
+        mismatch_pairs.emplace_back(std::make_pair(eA, eB));
+      }
+    }
+  }
+
+  const auto CalcAabb = [](const Vector3d& a, const Vector3d& b,
+                           const Vector3d& c, const Vector3d& d) {
+    Vector3d min = a;
+    Vector3d max = a;
+    min = min.cwiseMin(b);
+    max = max.cwiseMax(b);
+    min = min.cwiseMin(c);
+    max = max.cwiseMax(c);
+    min = min.cwiseMin(d);
+    max = max.cwiseMax(d);
+    return std::make_pair(min, max);
+  };
+
+  // Store the element counts in vector in order to identify which geometry the
+  // element is from
+  auto find_geometry_index = [](const int global_index,
+                                const std::vector<int>& scan) {
+    auto it = std::upper_bound(scan.begin(), scan.end(), global_index);
+    return static_cast<int>(std::distance(scan.begin(), it)) - 1;
+  };
+  std::unordered_map<uint32_t, hydroelastic::SoftGeometry>
+      index_to_soft_geometry{{0, soft_geometryA},
+                             {1, soft_geometryB},
+                             {2, soft_geometryC},
+                             {3, soft_geometryD}};
+  std::unordered_map<uint32_t, RigidTransformd> Transforms{
+      {0, X_WA}, {1, X_WB}, {2, X_WC}, {3, X_WD}};
+  std::vector<int> element_counts_scan = {0, num_A, num_A + num_B,
+                                          num_A + num_B + num_C};
+  // Check mismatch pairs for false positives
+  for (auto [eA, eB] : mismatch_pairs) {
+    int geom_eA = find_geometry_index(eA, element_counts_scan);
+    int geom_eB = find_geometry_index(eB, element_counts_scan);
+    int local_eA = eA - element_counts_scan[geom_eA];
+    int local_eB = eB - element_counts_scan[geom_eB];
+    auto [minA, maxA] =
+        CalcAabb(Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(0)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(1)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(2)),
+                 Transforms.at(geom_eA) *
+                     index_to_soft_geometry.at(geom_eA).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eA)
+                             .mesh()
+                             .element(local_eA)
+                             .vertex(3)));
+
+    auto [minB, maxB] =
+        CalcAabb(Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(0)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(1)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(2)),
+                 Transforms.at(geom_eB) *
+                     index_to_soft_geometry.at(geom_eB).mesh().vertex(
+                         index_to_soft_geometry.at(geom_eB)
+                             .mesh()
+                             .element(local_eB)
+                             .vertex(3)));
+
+    const Vector3d intersection_min = minA.cwiseMax(minB);
+    const Vector3d intersection_max = maxA.cwiseMin(maxB);
+    const Vector3d intersection_widths = intersection_max - intersection_min;
+    EXPECT_LE(intersection_widths.minCoeff(), 0);
   }
 }
 

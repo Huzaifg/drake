@@ -432,7 +432,7 @@ class SyclProximityEngine::Impl {
   std::vector<SYCLHydroelasticSurface> ComputeSYCLHydroelasticSurface(
       const std::unordered_map<GeometryId, math::RigidTransform<double>>&
           X_WGs) {
-    if (total_checks_ == 0) {
+    if (num_geometries_ < 2) {
       return {};
     }
 
