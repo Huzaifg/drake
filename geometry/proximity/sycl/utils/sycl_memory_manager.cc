@@ -253,8 +253,8 @@ void SyclMemoryHelper::AllocateNarrowPhaseChecksCollisionMemory(
     SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data,
     uint32_t estimated_narrow_phase_checks) {
   // Narrow phase data
-  collision_data.narrow_phase_check_indices =
-      mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
+  //   collision_data.narrow_phase_check_indices =
+  //       mem_mgr.AllocateDevice<uint32_t>(estimated_narrow_phase_checks);
   collision_data.narrow_phase_check_validity =
       mem_mgr.AllocateDevice<uint8_t>(estimated_narrow_phase_checks);
   collision_data.prefix_sum_narrow_phase_checks =
@@ -314,27 +314,45 @@ void SyclMemoryHelper::FreeMeshMemory(SyclMemoryManager& mem_mgr,
                                       DeviceMeshData& mesh_data) {
   // Element data
   mem_mgr.Free(mesh_data.elements);
+  mesh_data.elements = nullptr;
   mem_mgr.Free(mesh_data.element_mesh_ids);
+  mesh_data.element_mesh_ids = nullptr;
   mem_mgr.Free(mesh_data.inward_normals_M);
+  mesh_data.inward_normals_M = nullptr;
   mem_mgr.Free(mesh_data.inward_normals_W);
+  mesh_data.inward_normals_W = nullptr;
   mem_mgr.Free(mesh_data.min_pressures);
+  mesh_data.min_pressures = nullptr;
   mem_mgr.Free(mesh_data.max_pressures);
+  mesh_data.max_pressures = nullptr;
   mem_mgr.Free(mesh_data.gradient_M_pressure_at_Mo);
+  mesh_data.gradient_M_pressure_at_Mo = nullptr;
   mem_mgr.Free(mesh_data.gradient_W_pressure_at_Wo);
+  mesh_data.gradient_W_pressure_at_Wo = nullptr;
   mem_mgr.Free(mesh_data.element_aabb_min_W);
+  mesh_data.element_aabb_min_W = nullptr;
   mem_mgr.Free(mesh_data.element_aabb_max_W);
+  mesh_data.element_aabb_max_W = nullptr;
 
   // Vertex data
   mem_mgr.Free(mesh_data.vertices_M);
+  mesh_data.vertices_M = nullptr;
   mem_mgr.Free(mesh_data.vertices_W);
+  mesh_data.vertices_W = nullptr;
   mem_mgr.Free(mesh_data.pressures);
+  mesh_data.pressures = nullptr;
   mem_mgr.Free(mesh_data.vertex_mesh_ids);
+  mesh_data.vertex_mesh_ids = nullptr;
 
   // Lookup arrays
   mem_mgr.Free(mesh_data.element_offsets);
+  mesh_data.element_offsets = nullptr;
   mem_mgr.Free(mesh_data.vertex_offsets);
+  mesh_data.vertex_offsets = nullptr;
   mem_mgr.Free(mesh_data.element_counts);
+  mesh_data.element_counts = nullptr;
   mem_mgr.Free(mesh_data.vertex_counts);
+  mesh_data.vertex_counts = nullptr;
   mem_mgr.Free(mesh_data.geometry_ids);
   mem_mgr.Free(mesh_data.transforms);
 }
@@ -342,21 +360,13 @@ void SyclMemoryHelper::FreeMeshMemory(SyclMemoryManager& mem_mgr,
 // Free individual BVH mesh memory
 void SyclMemoryHelper::FreeBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,
                                                BVH& bvh_mesh) {
-  if (bvh_mesh.node_lowers != nullptr) {
-    mem_mgr.Free(bvh_mesh.node_lowers);
-  }
-  if (bvh_mesh.node_uppers != nullptr) {
-    mem_mgr.Free(bvh_mesh.node_uppers);
-  }
-  if (bvh_mesh.node_parents != nullptr) {
-    mem_mgr.Free(bvh_mesh.node_parents);
-  }
-  if (bvh_mesh.root != nullptr) {
-    mem_mgr.Free(bvh_mesh.root);
-  }
+  mem_mgr.Free(bvh_mesh.node_lowers);
   bvh_mesh.node_lowers = nullptr;
+  mem_mgr.Free(bvh_mesh.node_uppers);
   bvh_mesh.node_uppers = nullptr;
+  mem_mgr.Free(bvh_mesh.node_parents);
   bvh_mesh.node_parents = nullptr;
+  mem_mgr.Free(bvh_mesh.root);
   bvh_mesh.root = nullptr;
 }
 // Free all BVH memory
@@ -370,45 +380,69 @@ void SyclMemoryHelper::FreeBVHSingleMeshAndAllMeshMemory(
   }
 
   mem_mgr.Free(bvh_data.bvhAll);
+  bvh_data.bvhAll = nullptr;
   mem_mgr.Free(bvh_data.node_counts_per_mesh);
+  bvh_data.node_counts_per_mesh = nullptr;
   mem_mgr.Free(bvh_data.node_offsets);
+  bvh_data.node_offsets = nullptr;
   mem_mgr.Free(bvh_data.total_lowerAll);
+  bvh_data.total_lowerAll = nullptr;
   mem_mgr.Free(bvh_data.total_upperAll);
+  bvh_data.total_upperAll = nullptr;
   mem_mgr.Free(bvh_data.total_inv_edgesAll);
+  bvh_data.total_inv_edgesAll = nullptr;
   mem_mgr.Free(bvh_data.indicesAll);
+  bvh_data.indicesAll = nullptr;
   mem_mgr.Free(bvh_data.node_mesh_ids);
+  bvh_data.node_mesh_ids = nullptr;
   mem_mgr.Free(bvh_data.num_childrenAll);
+  bvh_data.num_childrenAll = nullptr;
 }
 
 void SyclMemoryHelper::FreeBVHAllMeshTempMemory(SyclMemoryManager& mem_mgr,
                                                 DeviceBVHData& bvh_data) {
   mem_mgr.Free(bvh_data.keysAll);
+  bvh_data.keysAll = nullptr;
   mem_mgr.Free(bvh_data.deltasAll);
+  bvh_data.deltasAll = nullptr;
   mem_mgr.Free(bvh_data.range_leftsAll);
+  bvh_data.range_leftsAll = nullptr;
   mem_mgr.Free(bvh_data.range_rightsAll);
+  bvh_data.range_rightsAll = nullptr;
 }
 
 // Free collision memory
 void SyclMemoryHelper::FreeCollisionMemory(
     SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data) {
   mem_mgr.Free(collision_data.collision_filter);
+  collision_data.collision_filter = nullptr;
   mem_mgr.Free(collision_data.collision_filter_host_body_index);
+  collision_data.collision_filter_host_body_index = nullptr;
   mem_mgr.Free(collision_data.total_checks_per_geometry);
+  collision_data.total_checks_per_geometry = nullptr;
   mem_mgr.Free(collision_data.geom_collision_filter_num_cols);
+  collision_data.geom_collision_filter_num_cols = nullptr;
   mem_mgr.Free(collision_data.geom_collision_filter_check_offsets);
+  collision_data.geom_collision_filter_check_offsets = nullptr;
   mem_mgr.Free(collision_data.prefix_sum_total_checks);
+  collision_data.prefix_sum_total_checks = nullptr;
   mem_mgr.Free(collision_data.narrow_phase_check_indices);
+  collision_data.narrow_phase_check_indices = nullptr;
   mem_mgr.Free(collision_data.narrow_phase_check_validity);
+  collision_data.narrow_phase_check_validity = nullptr;
   mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);
+  collision_data.prefix_sum_narrow_phase_checks = nullptr;
 }
 
 // Free only the collision detection memory of arrays based on narrow phase
 // checks
 void SyclMemoryHelper::FreeNarrowPhaseChecksCollisionMemory(
     SyclMemoryManager& mem_mgr, DeviceCollisionData& collision_data) {
-  mem_mgr.Free(collision_data.narrow_phase_check_indices);
+  //   mem_mgr.Free(collision_data.narrow_phase_check_indices);
   mem_mgr.Free(collision_data.narrow_phase_check_validity);
+  collision_data.narrow_phase_check_validity = nullptr;
   mem_mgr.Free(collision_data.prefix_sum_narrow_phase_checks);
+  collision_data.prefix_sum_narrow_phase_checks = nullptr;
 }
 
 // Free polygon memory
@@ -416,30 +450,48 @@ void SyclMemoryHelper::FreeFullPolygonMemory(SyclMemoryManager& mem_mgr,
                                              DevicePolygonData& polygon_data) {
   // Raw polygon data
   mem_mgr.Free(polygon_data.polygon_areas);
+  polygon_data.polygon_areas = nullptr;
   mem_mgr.Free(polygon_data.polygon_centroids);
+  polygon_data.polygon_centroids = nullptr;
   mem_mgr.Free(polygon_data.polygon_normals);
+  polygon_data.polygon_normals = nullptr;
   mem_mgr.Free(polygon_data.polygon_g_M);
+  polygon_data.polygon_g_M = nullptr;
   mem_mgr.Free(polygon_data.polygon_g_N);
+  polygon_data.polygon_g_N = nullptr;
   mem_mgr.Free(polygon_data.polygon_pressure_W);
+  polygon_data.polygon_pressure_W = nullptr;
   mem_mgr.Free(polygon_data.polygon_geom_index_A);
+  polygon_data.polygon_geom_index_A = nullptr;
   mem_mgr.Free(polygon_data.polygon_geom_index_B);
+  polygon_data.polygon_geom_index_B = nullptr;
 
   // Debug data
   mem_mgr.Free(polygon_data.debug_polygon_vertices);
+  polygon_data.debug_polygon_vertices = nullptr;
 }
 
 void SyclMemoryHelper::FreeCompactPolygonMemory(
     SyclMemoryManager& mem_mgr, DevicePolygonData& polygon_data) {
   // Compacted polygon data
   mem_mgr.Free(polygon_data.compacted_polygon_areas);
+  polygon_data.compacted_polygon_areas = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_centroids);
+  polygon_data.compacted_polygon_centroids = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_normals);
+  polygon_data.compacted_polygon_normals = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_g_M);
+  polygon_data.compacted_polygon_g_M = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_g_N);
+  polygon_data.compacted_polygon_g_N = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_pressure_W);
+  polygon_data.compacted_polygon_pressure_W = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_geom_index_A);
+  polygon_data.compacted_polygon_geom_index_A = nullptr;
   mem_mgr.Free(polygon_data.compacted_polygon_geom_index_B);
+  polygon_data.compacted_polygon_geom_index_B = nullptr;
   mem_mgr.Free(polygon_data.valid_polygon_indices);
+  polygon_data.valid_polygon_indices = nullptr;
 }
 
 void SyclMemoryHelper::FreePolygonMemory(SyclMemoryManager& mem_mgr,
@@ -450,8 +502,8 @@ void SyclMemoryHelper::FreePolygonMemory(SyclMemoryManager& mem_mgr,
 void SyclMemoryHelper::FreeDeviceCollidingIndicesMemoryChunk(
     SyclMemoryManager& mem_mgr, DeviceCollidingIndicesMemoryChunk& pair_chunk) {
   mem_mgr.Free(pair_chunk.collision_indices_A);
-  mem_mgr.Free(pair_chunk.collision_indices_B);
   pair_chunk.collision_indices_A = nullptr;
+  mem_mgr.Free(pair_chunk.collision_indices_B);
   pair_chunk.collision_indices_B = nullptr;
   pair_chunk.capacity_ = 0;
   pair_chunk.size_ = 0;

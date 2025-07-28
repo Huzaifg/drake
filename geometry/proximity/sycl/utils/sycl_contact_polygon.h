@@ -32,42 +32,6 @@ class ComputeContactPolygonsKernel;
  * threads do not return even for invalid checks. This is becasue the kernel has
  * barriers that need to be reached by ALL threads in the work group.
  *
- * @tparam DeviceTraits Template parameter for device-specific optimizations
- * @param item SYCL work item for thread coordination
- * @param slm Shared local memory for general data storage
- * @param slm_polygon Shared local memory for polygon vertex data
- * @param slm_ints Shared local memory for integer data
- * @param narrow_phase_check_indices Global array of narrow phase check indices
- * @param gradient_W_pressure_at_Wo Pressure gradient data for elements
- * @param element_offsets Element offset data for meshes
- * @param vertex_offsets Vertex offset data for meshes
- * @param element_mesh_ids Mesh IDs for elements
- * @param elements Tetrahedron vertex indices
- * @param vertices_W World-frame vertex coordinates
- * @param inward_normals_W World-frame inward normals
- * @param geom_collision_filter_num_cols Collision filter column counts
- * @param total_checks_per_geometry Total checks per geometry
- * @param collision_filter_host_body_index Host body indices for collision
- * filter
- * @param narrow_phase_check_validity Validity flags for narrow phase checks
- * @param polygon_areas Output: computed polygon areas
- * @param polygon_centroids Output: computed polygon centroids
- * @param polygon_normals Output: computed polygon normals
- * @param polygon_g_M Output: computed g_M values
- * @param polygon_g_N Output: computed g_N values
- * @param polygon_pressure_W Output: computed pressure values
- * @param polygon_geom_index_A Output: geometry index A
- * @param polygon_geom_index_B Output: geometry index B
- * @param geometry_ids Geometry ID mapping
- * @param TOTAL_THREADS_NEEDED Total number of threads required
- * @param NUM_THREADS_PER_CHECK Number of threads per collision check
- * @param DOUBLES_PER_CHECK Number of doubles per check in shared memory
- * @param POLYGON_DOUBLES Number of doubles for polygon data
- * @param EQ_PLANE_OFFSET Offset for equilibrium plane data
- * @param VERTEX_A_OFFSET Offset for vertex A data
- * @param VERTEX_B_OFFSET Offset for vertex B data
- * @param RANDOM_SCRATCH_OFFSET Offset for scratch space
- * @param POLYGON_VERTICES Number of polygon vertices
  */
 SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     sycl::nd_item<1> item, const sycl::local_accessor<double, 1>& slm,
@@ -77,15 +41,12 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
     const uint32_t DOUBLES_PER_CHECK, const uint32_t POLYGON_DOUBLES,
     const uint32_t EQ_PLANE_OFFSET, const uint32_t VERTEX_A_OFFSET,
     const uint32_t VERTEX_B_OFFSET, const uint32_t RANDOM_SCRATCH_OFFSET,
-    const uint32_t POLYGON_VERTICES, const uint32_t* narrow_phase_check_indices,
+    const uint32_t POLYGON_VERTICES,
     const Vector4<double>* gradient_W_pressure_at_Wo,
-    const uint32_t* element_offsets, const uint32_t* vertex_offsets,
-    const uint32_t* element_mesh_ids, const std::array<int, 4>* elements,
-    const Vector3<double>* vertices_W,
+    const uint32_t* vertex_offsets, const uint32_t* element_mesh_ids,
+    const std::array<int, 4>* elements, const Vector3<double>* vertices_W,
     const std::array<Vector3<double>, 4>* inward_normals_W,
-    const uint32_t* geom_collision_filter_num_cols,
-    const uint32_t* geom_collision_filter_check_offsets,
-    const uint32_t* collision_filter_host_body_index,
+    const uint32_t* collision_indices_A, const uint32_t* collision_indices_B,
     uint8_t* narrow_phase_check_validity, double* polygon_areas,
     Vector3<double>* polygon_centroids, Vector3<double>* polygon_normals,
     double* polygon_g_M, double* polygon_g_N, double* polygon_pressure_W,
@@ -127,9 +88,6 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
   // Need to make sure that invalid threads never participate in
   // any of the computations
   uint32_t narrow_phase_check_index = std::numeric_limits<uint32_t>::max();
-  uint32_t global_check_index = std::numeric_limits<uint32_t>::max();
-  uint32_t host_body_index = std::numeric_limits<uint32_t>::max();
-  uint32_t geom_local_check_number = std::numeric_limits<uint32_t>::max();
   uint32_t A_element_index = std::numeric_limits<uint32_t>::max();
   uint32_t B_element_index = std::numeric_limits<uint32_t>::max();
 
@@ -137,24 +95,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
   if (valid_thread) {
     narrow_phase_check_index = global_id / NUM_THREADS_PER_CHECK;
 
-    // global check index
-    global_check_index = narrow_phase_check_indices[narrow_phase_check_index];
-
-    // For these checks, get the global element indicies
-    // Same logic as the broad phase collision
-    host_body_index = collision_filter_host_body_index[global_check_index];
-
-    // Same logic as broad phase
-    uint32_t num_of_checks_offset =
-        geom_collision_filter_check_offsets[host_body_index];
-    geom_local_check_number = global_check_index - num_of_checks_offset;
-
-    A_element_index = element_offsets[host_body_index] +
-                      geom_local_check_number /
-                          geom_collision_filter_num_cols[host_body_index];
-    B_element_index = element_offsets[host_body_index + 1] +
-                      geom_local_check_number %
-                          geom_collision_filter_num_cols[host_body_index];
+    A_element_index = collision_indices_A[narrow_phase_check_index];
+    B_element_index = collision_indices_B[narrow_phase_check_index];
   }
 
   // We only need one thread to compute the Equilibrium Plane
@@ -651,6 +593,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygonsNoReturn(
           gradP_A_Wo_z * centroid_z + p_A_Wo;
 
       // Write Geometry Index A
+      const uint32_t geom_index_A = element_mesh_ids[A_element_index];
+      const uint32_t geom_index_B = element_mesh_ids[B_element_index];
       polygon_geom_index_A[narrow_phase_check_index] =
           geometry_ids[geom_index_A];
       // Write Geometry Index B
@@ -675,15 +619,13 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
     const uint32_t DOUBLES_PER_CHECK, const uint32_t POLYGON_DOUBLES,
     const uint32_t EQ_PLANE_OFFSET, const uint32_t VERTEX_A_OFFSET,
     const uint32_t VERTEX_B_OFFSET, const uint32_t RANDOM_SCRATCH_OFFSET,
-    const uint32_t POLYGON_VERTICES, const uint32_t* narrow_phase_check_indices,
+    const uint32_t POLYGON_VERTICES,
     const Vector4<double>* gradient_W_pressure_at_Wo,
     const uint32_t* element_offsets, const uint32_t* vertex_offsets,
     const uint32_t* element_mesh_ids, const std::array<int, 4>* elements,
     const Vector3<double>* vertices_W,
     const std::array<Vector3<double>, 4>* inward_normals_W,
-    const uint32_t* geom_collision_filter_num_cols,
-    const uint32_t* geom_collision_filter_check_offsets,
-    const uint32_t* collision_filter_host_body_index,
+    const uint32_t* collision_indices_A, const uint32_t* collision_indices_B,
     uint8_t* narrow_phase_check_validity, double* polygon_areas,
     Vector3<double>* polygon_centroids, Vector3<double>* polygon_normals,
     double* polygon_g_M, double* polygon_g_N, double* polygon_pressure_W,
@@ -722,27 +664,10 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
   // Get global element ids
   uint32_t narrow_phase_check_index = global_id / NUM_THREADS_PER_CHECK;
 
-  // global check index
-  uint32_t global_check_index =
-      narrow_phase_check_indices[narrow_phase_check_index];
-
-  // For these checks, get the global element indicies
-  // Same logic as the broad phase collision
-  const uint32_t host_body_index =
-      collision_filter_host_body_index[global_check_index];
-
-  // Same logic as broad phase
-  uint32_t num_of_checks_offset =
-      geom_collision_filter_check_offsets[host_body_index];
-  const uint32_t geom_local_check_number =
-      global_check_index - num_of_checks_offset;
-
   const uint32_t A_element_index =
-      element_offsets[host_body_index] +
-      geom_local_check_number / geom_collision_filter_num_cols[host_body_index];
+      collision_indices_A[narrow_phase_check_index];
   const uint32_t B_element_index =
-      element_offsets[host_body_index + 1] +
-      geom_local_check_number % geom_collision_filter_num_cols[host_body_index];
+      collision_indices_B[narrow_phase_check_index];
 
   // We only need one thread to compute the Equilibrium Plane
   // for each check, however we have potentially multiple threads
@@ -1216,6 +1141,8 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
           gradP_A_Wo_x * centroid_x + gradP_A_Wo_y * centroid_y +
           gradP_A_Wo_z * centroid_z + p_A_Wo;
 
+      const uint32_t geom_index_A = element_mesh_ids[A_element_index];
+      const uint32_t geom_index_B = element_mesh_ids[B_element_index];
       // Write Geometry Index A
       polygon_geom_index_A[narrow_phase_check_index] =
           geometry_ids[geom_index_A];
@@ -1246,12 +1173,15 @@ SYCL_EXTERNAL inline void ComputeContactPolygons(
  * @returns SYCL event for the contact polygon computation
  */
 
-template <typename CollisionData, typename MeshData, typename PolygonData,
+template <typename DeviceCollidingIndicesMemoryChunk,
+          typename DeviceCollisionData, typename MeshData, typename PolygonData,
           DeviceType device_type>
 sycl::event LaunchContactPolygonComputation(
     sycl::queue& q_device, const std::vector<sycl::event>& dependencies,
-    uint32_t total_narrow_phase_checks, const CollisionData& collision_data,
-    const MeshData& mesh_data, const PolygonData& polygon_data) {
+    uint32_t total_narrow_phase_checks,
+    const DeviceCollidingIndicesMemoryChunk& pair_chunk,
+    const DeviceCollisionData& collision_data, const MeshData& mesh_data,
+    const PolygonData& polygon_data) {
   //   constexpr uint32_t NUM_THREADS_PER_CHECK =
   //       device_type == DeviceType::GPU ? 4 : 1;
   constexpr uint32_t NUM_THREADS_PER_CHECK = 4;
@@ -1349,20 +1279,13 @@ sycl::event LaunchContactPolygonComputation(
     constexpr uint32_t SUB_GROUP_SIZE = NUM_THREADS_PER_CHECK;
     h.parallel_for<ComputeContactPolygonsKernel<device_type>>(
         sycl::nd_range<1>{NUM_GROUPS * LOCAL_SIZE, LOCAL_SIZE},
-        [=,
-         narrow_phase_check_indices = collision_data.narrow_phase_check_indices,
-         gradient_W_pressure_at_Wo = mesh_data.gradient_W_pressure_at_Wo,
-         element_offsets = mesh_data.element_offsets,
+        [=, gradient_W_pressure_at_Wo = mesh_data.gradient_W_pressure_at_Wo,
          vertex_offsets = mesh_data.vertex_offsets,
          element_mesh_ids = mesh_data.element_mesh_ids,
          elements = mesh_data.elements, vertices_W = mesh_data.vertices_W,
          inward_normals_W = mesh_data.inward_normals_W,
-         geom_collision_filter_num_cols =
-             collision_data.geom_collision_filter_num_cols,
-         geom_collision_filter_check_offsets =
-             collision_data.geom_collision_filter_check_offsets,
-         collision_filter_host_body_index =
-             collision_data.collision_filter_host_body_index,
+         collision_indices_A = pair_chunk.collision_indices_A,
+         collision_indices_B = pair_chunk.collision_indices_B,
          narrow_phase_check_validity =
              collision_data.narrow_phase_check_validity,
          polygon_areas = polygon_data.polygon_areas,
@@ -1393,14 +1316,12 @@ sycl::event LaunchContactPolygonComputation(
               NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,
               EQ_PLANE_OFFSET, VERTEX_A_OFFSET, VERTEX_B_OFFSET,
               RANDOM_SCRATCH_OFFSET, POLYGON_VERTICES,
-              narrow_phase_check_indices, gradient_W_pressure_at_Wo,
-              element_offsets, vertex_offsets, element_mesh_ids, elements,
-              vertices_W, inward_normals_W, geom_collision_filter_num_cols,
-              geom_collision_filter_check_offsets,
-              collision_filter_host_body_index, narrow_phase_check_validity,
-              polygon_areas, polygon_centroids, polygon_normals, polygon_g_M,
-              polygon_g_N, polygon_pressure_W, polygon_geom_index_A,
-              polygon_geom_index_B, geometry_ids);
+              gradient_W_pressure_at_Wo, vertex_offsets, element_mesh_ids,
+              elements, vertices_W, inward_normals_W, collision_indices_A,
+              collision_indices_B, narrow_phase_check_validity, polygon_areas,
+              polygon_centroids, polygon_normals, polygon_g_M, polygon_g_N,
+              polygon_pressure_W, polygon_geom_index_A, polygon_geom_index_B,
+              geometry_ids);
           // ComputeContactPolygons(
           //     item, slm, slm_polygon, slm_ints, TOTAL_THREADS_NEEDED,
           //     NUM_THREADS_PER_CHECK, DOUBLES_PER_CHECK, POLYGON_DOUBLES,

@@ -230,52 +230,30 @@ class SyclProximityEngine::Impl {
           .wait();
     }
 
-    // ========================================
-    // Some pre-processing for broad phase collision detection
-    // ========================================
-    SyclMemoryHelper::AllocateGeometryCollisionMemory(mem_mgr_, collision_data_,
-                                                      num_geometries_);
-
-    num_elements_in_last_geometry_ =
+    // We try and heuristically estimate the number of polygons as 1% of the
+    // total checks possible
+    uint32_t max_checks = 0;
+    uint32_t num_elements_in_last_geometry =
         mesh_data_.element_counts[num_geometries_ - 1];
-    total_checks_ = 0;
-    // Done entirely in CPU because its only looping over num_geometries
-    for (uint32_t i = 0; i < num_geometries_ - 1; ++i) {
-      const uint32_t num_elementsin_geometry = mesh_data_.element_counts[i];
-      const uint32_t num_elementsin_rest_of_geometries =
+    for (size_t i = 0; i < num_geometries_ - 1; ++i) {
+      const uint32_t num_elements_in_geometry = mesh_data_.element_counts[i];
+      const uint32_t num_elements_in_rest_of_geometries =
           (mesh_data_.element_offsets[num_geometries_ - 1] +
-           num_elements_in_last_geometry_) -
+           num_elements_in_last_geometry) -
           mesh_data_.element_offsets[i + 1];
-      collision_data_.geom_collision_filter_num_cols[i] =
-          num_elementsin_rest_of_geometries;
-      // We need to check each element in this geometry with each element in
-      // the rest of the geometries
-      collision_data_.total_checks_per_geometry[i] =
-          num_elementsin_rest_of_geometries * num_elementsin_geometry;
-      collision_data_.geom_collision_filter_check_offsets[i] = total_checks_;
-      total_checks_ += collision_data_.total_checks_per_geometry[i];
+      const uint32_t total_checks_per_geometry =
+          num_elements_in_rest_of_geometries * num_elements_in_geometry;
+      max_checks += total_checks_per_geometry;
     }
-    collision_data_.total_checks_per_geometry[num_geometries_ - 1] = 0;
 
-    // Allocate memory for polygon areas and centroids by estimating the narrow
-    // phase checks to be 1% of total element checks
-    estimated_narrow_phase_checks_ = std::max(
-        static_cast<uint32_t>(1), static_cast<uint32_t>(total_checks_ / 100));
-    // Similarly, we estimate the number of polygons to be 1% of the narrow
-    // phase checks
-    estimated_polygons_ =
-        std::max(static_cast<uint32_t>(1),
-                 static_cast<uint32_t>(estimated_narrow_phase_checks_ / 100));
-
-    // Resize based on the estimated narrow phase checks
-    current_polygon_areas_size_ = estimated_narrow_phase_checks_;
-    // Resize compacted data structures based on the estimated polygon sizes
-    current_polygon_indices_size_ = estimated_polygons_;
-
-    SyclMemoryHelper::AllocateTotalChecksCollisionMemory(
-        mem_mgr_, collision_data_, total_checks_);
+    // We estimate 1% of the total checks remaining after broad phase
+    estimated_narrow_phase_checks_ = std::max(1u, max_checks / 100);
+    // Used to identify which of the broad phase checks actually resulted in
+    // polygons
     SyclMemoryHelper::AllocateNarrowPhaseChecksCollisionMemory(
         mem_mgr_, collision_data_, estimated_narrow_phase_checks_);
+    // We estimate 1% of the narrow phase checks remaining as actual polygons
+    estimated_polygons_ = std::max(1u, estimated_narrow_phase_checks_ / 100);
 
     SyclMemoryHelper::AllocateFullPolygonMemory(mem_mgr_, polygon_data_,
                                                 estimated_narrow_phase_checks_);
@@ -283,19 +261,8 @@ class SyclProximityEngine::Impl {
     SyclMemoryHelper::AllocateCompactPolygonMemory(mem_mgr_, polygon_data_,
                                                    estimated_polygons_);
 
-    // Fill in geometry index based on checks per geometry
-    std::vector<sycl::event> collision_filter_host_body_indexfill_events;
-    for (uint32_t i = 0; i < num_geometries_ - 1; ++i) {
-      const uint32_t num_checks = collision_data_.total_checks_per_geometry[i];
-      collision_filter_host_body_indexfill_events.push_back(q_device_.fill(
-          collision_data_.collision_filter_host_body_index +
-              collision_data_.geom_collision_filter_check_offsets[i],
-          i, num_checks));
-    }
-
     // Wait for all transfers to complete before returning
     sycl::event::wait_and_throw(transfer_events);
-    sycl::event::wait_and_throw(collision_filter_host_body_indexfill_events);
   }
 
   // Copy constructor
@@ -408,8 +375,6 @@ class SyclProximityEngine::Impl {
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.StartKernel("unpack_transforms");
 #endif
-    auto collision_filtermemset_event = q_device_.memset(
-        collision_data_.collision_filter, 0, total_checks_ * sizeof(uint8_t));
 
     // Get transfomers in host
     for (uint32_t geom_index = 0; geom_index < num_geometries_; ++geom_index) {
@@ -652,51 +617,8 @@ class SyclProximityEngine::Impl {
         element_aabb_event, collision_candidates_to_data_, pair_chunk_,
         mem_mgr_, q_device_);
 
-    // =========================================
-    // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
-    // =========================================
-    auto generate_collision_filterevent = NaiveBroadPhase(
-        q_device_, mesh_data_, collision_data_, total_elements_, total_checks_,
-        element_aabb_event, collision_filtermemset_event);
-    generate_collision_filterevent.wait();
-
-    // =========================================
-    // Generate list of check_indices that are active
-    // =========================================
-
-    auto policy = oneapi::dpl::execution::make_device_policy(q_device_);
-
-    // Perform the exclusive scan using USM pointers as iterators
-    // We need to convert uint8_t collision_filter values to uint32_t for the
-    // scan
-    oneapi::dpl::transform_exclusive_scan(
-        policy, collision_data_.collision_filter,
-        collision_data_.collision_filter + total_checks_,
-        collision_data_.prefix_sum_total_checks,  // output
-        static_cast<uint32_t>(0),                 // initial value
-        sycl::plus<uint32_t>(),                   // binary operation
-        [](uint8_t x) {
-          return static_cast<uint32_t>(x);
-        });  // transform uint8_t to uint32_t
-    q_device_.wait_and_throw();
-
-    // Total checks needed for narrow phase
-    total_narrow_phase_checks_ = 0;
-    q_device_
-        .memcpy(&total_narrow_phase_checks_,
-                collision_data_.prefix_sum_total_checks + total_checks_ - 1,
-                sizeof(uint32_t))
-        .wait();
-    // Last element check or not?
-    uint8_t last_check_flag = 0;
-    q_device_
-        .memcpy(&last_check_flag,
-                collision_data_.collision_filter + total_checks_ - 1,
-                sizeof(uint8_t))
-        .wait();
-    // If last check is 1, then we need to add one more check
-    total_narrow_phase_checks_ += static_cast<uint32_t>(last_check_flag);
-
+    // Chunk size gives us all the element checks that we need to perform
+    total_narrow_phase_checks_ = pair_chunk_.size_;
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.EndKernel("transform_and_broad_phase");
 #endif
@@ -715,7 +637,6 @@ class SyclProximityEngine::Impl {
       SyclMemoryHelper::FreeFullPolygonMemory(mem_mgr_, polygon_data_);
       SyclMemoryHelper::FreeNarrowPhaseChecksCollisionMemory(mem_mgr_,
                                                              collision_data_);
-
       // Allocate new memory with larger size
       SyclMemoryHelper::AllocateFullPolygonMemory(mem_mgr_, polygon_data_,
                                                   new_size);
@@ -724,53 +645,15 @@ class SyclProximityEngine::Impl {
 
       current_polygon_areas_size_ = new_size;
     }
-
-    /// Reset quantities that need to be reset across timesteps
-    std::vector<sycl::event> fill_events;
-    fill_events.push_back(q_device_.fill(
-        collision_data_.narrow_phase_check_validity, static_cast<uint8_t>(1),
-        current_polygon_areas_size_));  // All valid at the start
-    fill_events.push_back(
-        q_device_.fill(collision_data_.prefix_sum_narrow_phase_checks, 0,
-                       current_polygon_areas_size_));
-
-    auto fill_narrow_phase_check_indicesevent =
-        q_device_.submit([&](sycl::handler& h) {
-          h.depends_on(generate_collision_filterevent);
-          const uint32_t work_group_size = 1024;
-          const uint32_t global_checks =
-              RoundUpToWorkGroupSize(total_checks_, work_group_size);
-          h.parallel_for<FillNarrowPhaseCheckIndicesKernel>(
-              sycl::nd_range<1>(sycl::range<1>(global_checks),
-                                sycl::range<1>(work_group_size)),
-              [=,
-               narrow_phase_check_indices =
-                   collision_data_.narrow_phase_check_indices,
-               prefix_sum_total_checks =
-                   collision_data_.prefix_sum_total_checks,
-               collision_filter = collision_data_.collision_filter,
-               total_checks_ = total_checks_]
-#ifdef __NVPTX__
-              [[sycl::reqd_work_group_size(1024)]]
-#endif
-              (sycl::nd_item<1> item) {
-                const uint32_t check_index = item.get_global_id(0);
-                if (check_index >= total_checks_) return;
-                if (collision_filter[check_index] == 1) {
-                  uint32_t narrow_check_num =
-                      prefix_sum_total_checks[check_index];
-                  narrow_phase_check_indices[narrow_check_num] = check_index;
-                }
-              });
-        });
+    // Initialize all the narrow phase check validity to 1
+    q_device_
+        .fill(collision_data_.narrow_phase_check_validity,
+              static_cast<uint8_t>(1), current_polygon_areas_size_)
+        .wait();
 
     // Create dependency vector
-    std::vector<sycl::event> dependencies = {
-        generate_collision_filterevent, fill_narrow_phase_check_indicesevent,
-        transform_elem_quantities_event1, transform_elem_quantities_event2};
-    // Add polygon fill events to dependencies
-    dependencies.insert(dependencies.end(), fill_events.begin(),
-                        fill_events.end());
+    std::vector<sycl::event> dependencies = {transform_elem_quantities_event1,
+                                             transform_elem_quantities_event2};
 #ifdef DRAKE_SYCL_TIMING_ENABLED
     timing_logger_.StartKernel("compute_contact_polygons");
 #endif
@@ -778,19 +661,22 @@ class SyclProximityEngine::Impl {
     if (q_device_.get_device().get_info<sycl::info::device::device_type>() ==
         sycl::info::device_type::gpu) {
       compute_contact_polygon_event =
-          LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
+          LaunchContactPolygonComputation<DeviceCollidingIndicesMemoryChunk,
+                                          DeviceCollisionData, DeviceMeshData,
                                           DevicePolygonData, DeviceType::GPU>(
-              q_device_, dependencies, total_narrow_phase_checks_,
+              q_device_, dependencies, total_narrow_phase_checks_, pair_chunk_,
               collision_data_, mesh_data_, polygon_data_);
     } else {
       compute_contact_polygon_event =
-          LaunchContactPolygonComputation<DeviceCollisionData, DeviceMeshData,
+          LaunchContactPolygonComputation<DeviceCollidingIndicesMemoryChunk,
+                                          DeviceCollisionData, DeviceMeshData,
                                           DevicePolygonData, DeviceType::CPU>(
-              q_device_, dependencies, total_narrow_phase_checks_,
+              q_device_, dependencies, total_narrow_phase_checks_, pair_chunk_,
               collision_data_, mesh_data_, polygon_data_);
     }
     compute_contact_polygon_event.wait_and_throw();
 
+    auto policy = oneapi::dpl::execution::make_device_policy(q_device_);
     // Exclusive scan to compact data into only the valid polygons found by
     // SYCL
     oneapi::dpl::transform_exclusive_scan(
@@ -813,7 +699,7 @@ class SyclProximityEngine::Impl {
                 sizeof(uint32_t))
         .wait();
     // Last element check or not?
-    last_check_flag = 0;
+    uint8_t last_check_flag = 0;
     q_device_
         .memcpy(&last_check_flag,
                 collision_data_.narrow_phase_check_validity +
@@ -1011,9 +897,6 @@ class SyclProximityEngine::Impl {
 
   uint32_t current_debug_polygon_vertices_size_ = 0;
 
-  // Some helpers for broad phase collision detection
-  uint32_t num_elements_in_last_geometry_ = 0;
-  uint32_t total_checks_ = 0;
   uint32_t estimated_narrow_phase_checks_ =
       0;  // Estimated number of narrow phase checks (set to be 5% of total
           // element checks and used to size polygon_areas and
@@ -1088,6 +971,12 @@ const SyclProximityEngine::Impl* SyclProximityEngineAttorney::get_impl(
     const SyclProximityEngine& engine) {
   return engine.impl_.get();
 }
+
+uint32_t SyclProximityEngineAttorney::get_total_checks(
+    SyclProximityEngine::Impl* impl) {
+  return 0;
+}
+
 std::vector<uint8_t> SyclProximityEngineAttorney::get_collision_filter(
     SyclProximityEngine::Impl* impl) {
   uint32_t total_checks = SyclProximityEngineAttorney::get_total_checks(impl);
@@ -1160,10 +1049,6 @@ Vector4<double>* SyclProximityEngineAttorney::get_gradient_W_pressure_at_Wo(
 uint32_t* SyclProximityEngineAttorney::get_collision_filter_host_body_index(
     SyclProximityEngine::Impl* impl) {
   return impl->collision_data_.collision_filter_host_body_index;
-}
-uint32_t SyclProximityEngineAttorney::get_total_checks(
-    SyclProximityEngine::Impl* impl) {
-  return impl->total_checks_;
 }
 
 uint32_t SyclProximityEngineAttorney::get_total_narrow_phase_checks(

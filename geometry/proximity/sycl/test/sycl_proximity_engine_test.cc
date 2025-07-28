@@ -583,26 +583,10 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
   }
 
   // Get the narrow phase check indices
-  const std::vector<uint32_t> narrow_phase_check_indices =
-      SyclProximityEngineAttorney::get_narrow_phase_check_indices(impl);
   const uint32_t total_polygons =
       SyclProximityEngineAttorney::get_total_polygons(impl);
   const std::vector<uint32_t> valid_polygon_indices =
       SyclProximityEngineAttorney::get_valid_polygon_indices(impl);
-
-  // Construct the element id pairs correspinding to each narrow_phase check
-  // These id pairs will map to the global index that was used in the
-  // collision_filter_ (row and column)
-  std::vector<std::pair<int, int>> element_id_pairs;
-  for (uint32_t i = 0; i < total_polygons; ++i) {
-    uint32_t global_check_index =
-        narrow_phase_check_indices[valid_polygon_indices[i]];
-    int eA = global_check_index / soft_geometryB.mesh().num_elements();
-    int eB = global_check_index - eA * soft_geometryB.mesh().num_elements();
-    element_id_pairs.emplace_back(eA, eB);
-  }
-  std::vector<double> debug_polygon_vertices =
-      SyclProximityEngineAttorney::get_debug_polygon_vertices(impl);
 
   fmt::print("ssize(compacted_polygon_areas): {}\n", total_polygons);
   fmt::print("contact surface num_faces: {}\n", contact_surface->num_faces());
@@ -642,15 +626,22 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
     const double expected_pressure =
         contact_pressure->EvaluateCartesian(i, expected_centroid_M);
 
-    const std::pair<int, int> tet_pair{tet0, tet1};
-    const auto it =
-        std::find(element_id_pairs.begin(), element_id_pairs.end(), tet_pair);
+    // Global offsets for the tets
+    const int global_tet0 = tet0;
+    const int global_tet1 = tet1 + num_elements_A;
+    const std::pair<int, int> global_tet_pair{global_tet0, global_tet1};
+    const auto it = std::find(obtained_collisions.begin(),
+                              obtained_collisions.end(), global_tet_pair);
     // We expect to find polygons for every polygon in the cpu surface.
-    EXPECT_TRUE(it != element_id_pairs.end());
+    EXPECT_TRUE(it != obtained_collisions.end());
 
     // Do all the checks
-    if (it != element_id_pairs.end()) {
-      int index = (it - element_id_pairs.begin());
+    if (it != obtained_collisions.end()) {
+      int global_index = (it - obtained_collisions.begin());
+      // Find this check index in the valid polygon index
+      int index = std::find(valid_polygon_indices.begin(),
+                            valid_polygon_indices.end(), global_index) -
+                  valid_polygon_indices.begin();
       polygons_found.push_back(index);
       if (std::abs(surfaces[0].areas()[index] - expected_area) >
           1e2 * std::numeric_limits<double>::epsilon()) {
@@ -659,7 +650,7 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
             "Bad area at index {} for tet pair ({}, {}): expected={}, "
             "got={}\n\n",
             index, tet0, tet1, expected_area, surfaces[0].areas()[index]);
-        degenerate_tets.push_back(tet_pair);
+        degenerate_tets.push_back(global_tet_pair);
       }
       const double centroid_error =
           (expected_centroid_W - surfaces[0].centroids()[index]).norm();
@@ -755,11 +746,12 @@ GTEST_TEST(SPETest, TwoSpheresColliding) {
   for (int i = 0; i < static_cast<int>(surfaces[0].num_polygons()); ++i) {
     if (!std::binary_search(polygons_found.begin(), polygons_found.end(), i)) {
       if (surfaces[0].areas()[i] > 1e-15) {
+        int index = valid_polygon_indices[i];
         std::cerr << fmt::format(
             "Polygon with index {} and tet pair ({}, {}) has area {} and "
             "centroid {} in SYCL but not found in Drake\n",
-            i, element_id_pairs[i].first, element_id_pairs[i].second,
-            surfaces[0].areas()[i],
+            i, obtained_collisions[index].first,
+            obtained_collisions[index].second, surfaces[0].areas()[i],
             fmt_eigen(surfaces[0].centroids()[i].transpose()));
         counter++;
       }
