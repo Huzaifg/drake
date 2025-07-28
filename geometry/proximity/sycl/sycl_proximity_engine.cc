@@ -1128,11 +1128,6 @@ std::vector<double> SyclProximityEngineAttorney::get_debug_polygon_vertices(
   return debug_polygon_vertices_host;
 }
 
-DeviceBVHData SyclProximityEngineAttorney::get_bvh_data(
-    SyclProximityEngine::Impl* impl) {
-  return impl->bvh_data_;
-}
-
 std::unordered_map<
     SortedPair<GeometryId>,
     std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
@@ -1199,14 +1194,9 @@ HostMeshData SyclProximityEngineAttorney::get_mesh_data(
   return host_mesh_data;
 }
 
-SyclMemoryManager SyclProximityEngineAttorney::get_mem_mgr(
+uint32_t SyclProximityEngineAttorney::get_num_meshes(
     SyclProximityEngine::Impl* impl) {
-  return impl->mem_mgr_;
-}
-
-sycl::queue SyclProximityEngineAttorney::get_q_device(
-    SyclProximityEngine::Impl* impl) {
-  return impl->q_device_;
+  return impl->num_geometries_;
 }
 
 void SyclProximityEngineAttorney::PrintTimingStats(
@@ -1221,6 +1211,400 @@ void SyclProximityEngineAttorney::PrintTimingStatsJson(
 #ifdef DRAKE_SYCL_TIMING_ENABLED
   impl->timing_logger_.PrintStatsJson(path);
 #endif
+}
+
+HostBVH SyclProximityEngineAttorney::get_host_bvh(
+    SyclProximityEngine::Impl* impl, const int sorted_mesh_id) {
+  if (sorted_mesh_id < 0 ||
+      static_cast<uint32_t>(sorted_mesh_id) >= impl->bvh_data_.num_meshes) {
+    throw std::runtime_error("Invalid mesh_id: " +
+                             std::to_string(sorted_mesh_id));
+  }
+
+  const BVH& device_bvh = impl->bvh_data_.bvhAll[sorted_mesh_id];
+  HostBVH host_bvh;
+  host_bvh.max_nodes = device_bvh.max_nodes;
+
+  // TODO - Set these post build in GPU BVH
+  // host_bvh.num_nodes =
+  //     device_bvh.num_nodes;  // Assuming this is set post-build.
+  // host_bvh.num_leaf_nodes =
+  //     device_bvh.num_leaf_nodes;  // Assuming set post-build.
+
+  // Copy arrays to host vectors.
+  host_bvh.node_lowers.resize(device_bvh.max_nodes);
+  impl->mem_mgr_.CopyToHost(host_bvh.node_lowers.data(), device_bvh.node_lowers,
+                            device_bvh.max_nodes);
+
+  host_bvh.node_uppers.resize(device_bvh.max_nodes);
+  impl->mem_mgr_.CopyToHost(host_bvh.node_uppers.data(), device_bvh.node_uppers,
+                            device_bvh.max_nodes);
+
+  host_bvh.node_parents.resize(device_bvh.max_nodes);
+  impl->mem_mgr_.CopyToHost(host_bvh.node_parents.data(),
+                            device_bvh.node_parents, device_bvh.max_nodes);
+
+  // Copy root index (single int).
+  int device_root;
+  impl->mem_mgr_.CopyToHost(&device_root, device_bvh.root, 1);
+  host_bvh.root_index = device_root;
+
+  // Wait for all copies to complete.
+  impl->q_device_.wait_and_throw();
+
+  return host_bvh;
+}
+
+HostIndicesAll SyclProximityEngineAttorney::get_host_indices_all(
+    SyclProximityEngine::Impl* impl) {
+  HostIndicesAll host_indices_all;
+  host_indices_all.indicesAll.resize(impl->total_elements_);
+  impl->mem_mgr_.CopyToHost(host_indices_all.indicesAll.data(),
+                            impl->bvh_data_.indicesAll, impl->total_elements_);
+  impl->q_device_.wait_and_throw();
+  return host_indices_all;
+}
+
+int SyclProximityEngineAttorney::ComputeBVHTreeHeight(const HostBVH& host_bvh) {
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  return ComputeSubtreeHeight(host_bvh, host_bvh.root_index, visited);
+}
+
+int SyclProximityEngineAttorney::CountBVHLeaves(const HostBVH& host_bvh) {
+  int count = 0;
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  CountLeavesRecursive(host_bvh, host_bvh.root_index, visited, &count);
+  return count;
+}
+
+int SyclProximityEngineAttorney::ComputeBVHBalanceFactor(
+    const HostBVH& host_bvh) {
+  int max_imbalance = 0;
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  ComputeBalanceRecursive(host_bvh, host_bvh.root_index, visited,
+                          &max_imbalance);
+  return max_imbalance;
+}
+
+// Computes average depth across all leaves
+double SyclProximityEngineAttorney::ComputeBVHAverageLeafDepth(
+    const HostBVH& host_bvh) {
+  int total_depth = 0;
+  int leaf_count = 0;
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  ComputeDepthsRecursive(host_bvh, host_bvh.root_index, visited, 0,
+                         &total_depth, &leaf_count);
+  return leaf_count > 0 ? static_cast<double>(total_depth) / leaf_count : 0.0;
+}
+
+bool SyclProximityEngineAttorney::VerifyBVHBounds(const HostBVH& host_bvh) {
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  return VerifyBoundsRecursive(host_bvh, host_bvh.root_index, visited);
+}
+
+void SyclProximityEngineAttorney::ComputeAndPrintBVHImbalanceHistogram(
+    const HostBVH& host_bvh, const std::string& filepath) {
+  auto heights = ComputeAllHeights(host_bvh);
+
+  int max_diff = 0;
+  std::vector<int> diffs;
+  for (int i = 0; i < host_bvh.max_nodes; ++i) {
+    if (heights[i] == -1) continue;
+    const auto& lower = host_bvh.node_lowers[i];
+    if (lower.b == 1) continue;  // Leaf
+    int left_h = heights[lower.i];
+    int right_h = heights[host_bvh.node_uppers[i].i];
+    int diff = std::abs(left_h - right_h);
+    diffs.push_back(diff);
+    max_diff = std::max(max_diff, diff);
+  }
+
+  std::vector<int> histogram(max_diff + 1, 0);
+  for (int d : diffs) {
+    ++histogram[d];
+  }
+  PrintHistogramJSON(histogram, filepath);
+}
+
+void SyclProximityEngineAttorney::PrintBVHNodeBoundingBoxes(
+    const HostBVH& host_bvh, const HostIndicesAll& host_indices_all,
+    const HostMeshData& mesh_data, const int sorted_mesh_id) {
+  PrintNodeBoundingBoxesBFS(host_bvh, host_bvh.root_index, host_indices_all,
+                            mesh_data, sorted_mesh_id);
+}
+
+// Private helpers
+// Helper to compute subtree height with cycle detection.
+int SyclProximityEngineAttorney::ComputeSubtreeHeight(
+    const HostBVH& host_bvh, int node_index, std::vector<bool>& visited) {
+  if (node_index < 0 || node_index >= host_bvh.max_nodes ||
+      visited[node_index]) {
+    return -1;  // Invalid or cycle.
+  }
+  visited[node_index] = true;
+
+  const BVHPackedNodeHalf& lower = host_bvh.node_lowers[node_index];
+  if (lower.b == 1) {  // Leaf (based on your BVH: b=1 for leaves).
+    return 0;
+  }
+
+  // Assume binary tree: left child in lower.i, right in upper.i.
+  const BVHPackedNodeHalf& upper = host_bvh.node_uppers[node_index];
+  int left_height = ComputeSubtreeHeight(host_bvh, lower.i, visited);
+  int right_height = ComputeSubtreeHeight(host_bvh, upper.i, visited);
+  if (left_height == -1 || right_height == -1) return -1;
+  return 1 + std::max(left_height, right_height);
+}
+
+// Recursive helper for counting leaves with visited set.
+void SyclProximityEngineAttorney::CountLeavesRecursive(
+    const HostBVH& host_bvh, int node_index, std::vector<bool>& visited,
+    int* count) {
+  if (node_index < 0 || node_index >= host_bvh.max_nodes ||
+      visited[node_index]) {
+    return;
+  }
+  visited[node_index] = true;
+  const BVHPackedNodeHalf& lower = host_bvh.node_lowers[node_index];
+  if (lower.b == 1) {  // Leaf.
+    ++(*count);
+    return;
+  }
+  const BVHPackedNodeHalf& upper = host_bvh.node_uppers[node_index];
+  CountLeavesRecursive(host_bvh, lower.i, visited, count);
+  CountLeavesRecursive(host_bvh, upper.i, visited, count);
+}
+
+// Recursive helper for balance factor.
+void SyclProximityEngineAttorney::ComputeBalanceRecursive(
+    const HostBVH& host_bvh, int node_index, std::vector<bool>& visited,
+    int* max_imbalance) {
+  if (node_index < 0 || node_index >= host_bvh.max_nodes ||
+      visited[node_index]) {
+    return;
+  }
+  visited[node_index] = true;
+  const BVHPackedNodeHalf& lower = host_bvh.node_lowers[node_index];
+  if (lower.b == 1) return;  // Leaf.
+
+  const BVHPackedNodeHalf& upper = host_bvh.node_uppers[node_index];
+  std::vector<bool> left_visited = visited;  // Copy to avoid interference.
+  std::vector<bool> right_visited = visited;
+  int left_height = ComputeSubtreeHeight(host_bvh, lower.i, left_visited);
+  int right_height = ComputeSubtreeHeight(host_bvh, upper.i, right_visited);
+  if (left_height != -1 && right_height != -1) {
+    *max_imbalance =
+        std::max(*max_imbalance, std::abs(left_height - right_height));
+  }
+  ComputeBalanceRecursive(host_bvh, lower.i, visited, max_imbalance);
+  ComputeBalanceRecursive(host_bvh, upper.i, visited, max_imbalance);
+}
+
+// Recursive helper for average leaf depth.
+void SyclProximityEngineAttorney::ComputeDepthsRecursive(
+    const HostBVH& host_bvh, int node_index, std::vector<bool>& visited,
+    int current_depth, int* total_depth, int* leaf_count) {
+  if (node_index < 0 || node_index >= host_bvh.max_nodes ||
+      visited[node_index]) {
+    return;
+  }
+  visited[node_index] = true;
+  const BVHPackedNodeHalf& lower = host_bvh.node_lowers[node_index];
+  if (lower.b == 1) {  // Leaf.
+    *total_depth += current_depth;
+    ++(*leaf_count);
+    return;
+  }
+  const BVHPackedNodeHalf& upper = host_bvh.node_uppers[node_index];
+  ComputeDepthsRecursive(host_bvh, lower.i, visited, current_depth + 1,
+                         total_depth, leaf_count);
+  ComputeDepthsRecursive(host_bvh, upper.i, visited, current_depth + 1,
+                         total_depth, leaf_count);
+}
+
+// Recursive helper to verify bounds (e.g., parent bounds == union of
+// children). Assumes Vector3<double> has cwiseMin/cwiseMax.
+bool SyclProximityEngineAttorney::VerifyBoundsRecursive(
+    const HostBVH& host_bvh, int node_index, std::vector<bool>& visited) {
+  if (node_index < 0 || node_index >= host_bvh.max_nodes ||
+      visited[node_index]) {
+    return false;
+  }
+  visited[node_index] = true;
+  const BVHPackedNodeHalf& lower = host_bvh.node_lowers[node_index];
+  const BVHPackedNodeHalf& upper = host_bvh.node_uppers[node_index];
+
+  Vector3<double> parent_lower(lower.x, lower.y, lower.z);
+  Vector3<double> parent_upper(upper.x, upper.y, upper.z);
+
+  if (lower.b == 1) {
+    // leafs : Check the maximum primitves per leaf
+    // get their AABBs and test if the node is the union of all the
+    // primitive AABBs
+    const unsigned int start_index = lower.i;
+    const unsigned int end_index = upper.i;
+    const unsigned int num_primitives = end_index - start_index;
+    Vector3<double> obtained_lower(lower.x, lower.y, lower.z);
+    Vector3<double> obtained_upper(upper.x, upper.y, upper.z);
+
+    for (unsigned int i = start_index; i < end_index; ++i) {
+      const BVHPackedNodeHalf& primitive_lower = host_bvh.node_lowers[i];
+      const BVHPackedNodeHalf& primitive_upper = host_bvh.node_uppers[i];
+      Vector3<double> current_lower(primitive_lower.x, primitive_lower.y,
+                                    primitive_lower.z);
+      Vector3<double> current_upper(primitive_upper.x, primitive_upper.y,
+                                    primitive_upper.z);
+      obtained_lower = obtained_lower.cwiseMin(current_lower);
+      obtained_upper = obtained_upper.cwiseMax(current_upper);
+    }
+    // Check if parent bounds properly enclose the obtained bounds
+    if (obtained_lower[0] < parent_lower[0] ||
+        obtained_lower[1] < parent_lower[1] ||
+        obtained_lower[2] < parent_lower[2] ||
+        obtained_upper[0] > parent_upper[0] ||
+        obtained_upper[1] > parent_upper[1] ||
+        obtained_upper[2] > parent_upper[2]) {
+      return false;
+    }
+    return true;
+  }
+
+  // Check left child.
+  const BVHPackedNodeHalf& left_lower = host_bvh.node_lowers[lower.i];
+  const BVHPackedNodeHalf& left_upper = host_bvh.node_uppers[lower.i];
+  Vector3<double> left_min(left_lower.x, left_lower.y, left_lower.z);
+  Vector3<double> left_max(left_upper.x, left_upper.y, left_upper.z);
+
+  // Check right child.
+  const BVHPackedNodeHalf& right_lower = host_bvh.node_lowers[upper.i];
+  const BVHPackedNodeHalf& right_upper = host_bvh.node_uppers[upper.i];
+  Vector3<double> right_min(right_lower.x, right_lower.y, right_lower.z);
+  Vector3<double> right_max(right_upper.x, right_upper.y, right_upper.z);
+
+  // Verify parent is union.
+  Vector3<double> expected_min = left_min.cwiseMin(right_min);
+  Vector3<double> expected_max = left_max.cwiseMax(right_max);
+  const double kEpsilon = 1e-8;
+  bool bounds_valid = (parent_lower[0] <= expected_min[0] + kEpsilon) &&
+                      (parent_lower[1] <= expected_min[1] + kEpsilon) &&
+                      (parent_lower[2] <= expected_min[2] + kEpsilon) &&
+                      (parent_upper[0] >= expected_max[0] - kEpsilon) &&
+                      (parent_upper[1] >= expected_max[1] - kEpsilon) &&
+                      (parent_upper[2] >= expected_max[2] - kEpsilon);
+
+  return bounds_valid && VerifyBoundsRecursive(host_bvh, lower.i, visited) &&
+         VerifyBoundsRecursive(host_bvh, upper.i, visited);
+}
+
+// Computes heights for all nodes using memoization.
+// Returns vector of heights, or empty if invalid.
+std::vector<int> SyclProximityEngineAttorney::ComputeAllHeights(
+    const HostBVH& host_bvh) {
+  std::vector<int> heights(host_bvh.max_nodes, -1);
+  if (!ComputeHeightMemo(host_bvh, host_bvh.root_index, heights)) {
+    return {};
+  }
+  return heights;
+}
+
+// Recursive memoized height computation. Returns true if valid.
+bool SyclProximityEngineAttorney::ComputeHeightMemo(const HostBVH& host_bvh,
+                                                    int node,
+                                                    std::vector<int>& heights) {
+  if (node < 0 || node >= host_bvh.max_nodes) return false;
+  if (heights[node] != -1) return true;
+
+  const auto& lower = host_bvh.node_lowers[node];
+  if (lower.b == 1) {  // Leaf
+    heights[node] = 0;
+    return true;
+  }
+
+  if (!ComputeHeightMemo(host_bvh, lower.i, heights)) return false;
+  if (!ComputeHeightMemo(host_bvh, host_bvh.node_uppers[node].i, heights))
+    return false;
+
+  int left_h = heights[lower.i];
+  int right_h = heights[host_bvh.node_uppers[node].i];
+  heights[node] = 1 + std::max(left_h, right_h);
+  return true;
+}
+
+void SyclProximityEngineAttorney::PrintHistogramJSON(
+    const std::vector<int>& histogram, const std::string& filepath) {
+  std::ofstream file(filepath);
+  if (!file.is_open()) {
+    std::cerr << "Failed to open histogram.json" << std::endl;
+    return;
+  }
+  file << "{" << std::endl;
+  file << "  \"histogram\": [" << std::endl;
+  for (size_t i = 0; i < histogram.size(); ++i) {
+    file << "    " << histogram[i];
+    if (i < histogram.size() - 1) {
+      file << ",";
+    }
+    file << std::endl;
+  }
+  file << "  ]" << std::endl;
+  file << "}" << std::endl;
+  file.close();
+}
+
+void SyclProximityEngineAttorney::PrintNodeBoundingBoxesBFS(
+    const HostBVH& host_bvh, int root_index,
+    const HostIndicesAll& host_indices_all, const HostMeshData& mesh_data,
+    const int sorted_mesh_id) {
+  if (root_index < 0 || root_index >= host_bvh.max_nodes) {
+    return;
+  }
+  const int element_offset = mesh_data.element_offsets[sorted_mesh_id];
+  std::vector<bool> visited(host_bvh.max_nodes, false);
+  std::queue<int> q;
+  q.push(root_index);
+  visited[root_index] = true;
+  while (!q.empty()) {
+    int node_index = q.front();
+    q.pop();
+    const auto& lower = host_bvh.node_lowers[node_index];
+    const auto& upper = host_bvh.node_uppers[node_index];
+    std::cout << "Node " << node_index << ": "
+              << "Lower = (" << lower.x << ", " << lower.y << ", " << lower.z
+              << ") "
+              << "Upper = (" << upper.x << ", " << upper.y << ", " << upper.z
+              << ")\n";
+    if (lower.b != 1) {  // Not a leaf
+      if (lower.i >= 0 && lower.i < host_bvh.max_nodes && !visited[lower.i]) {
+        q.push(lower.i);
+        visited[lower.i] = true;
+      }
+      int right_index = host_bvh.node_uppers[node_index].i;
+      if (right_index >= 0 && right_index < host_bvh.max_nodes &&
+          !visited[right_index]) {
+        q.push(right_index);
+        visited[right_index] = true;
+      }
+    } else {
+      // Leaf node
+      const unsigned int start_index = lower.i;
+      const unsigned int end_index = upper.i;
+      for (unsigned int i = start_index; i < end_index; ++i) {
+        const unsigned int local_primitive_index =
+            host_indices_all.indicesAll[i + element_offset];
+        const unsigned int global_primitive_index =
+            local_primitive_index + element_offset;
+        const Vector3<double> lower_W =
+            mesh_data.element_aabb_min_W[global_primitive_index];
+        const Vector3<double> upper_W =
+            mesh_data.element_aabb_max_W[global_primitive_index];
+        std::cout << "Primitive " << global_primitive_index << ": "
+                  << "Lower = (" << lower_W[0] << ", " << lower_W[1] << ", "
+                  << lower_W[2] << ") "
+                  << "Upper = (" << upper_W[0] << ", " << upper_W[1] << ", "
+                  << upper_W[2] << ")\n";
+      }
+    }
+  }
 }
 
 }  // namespace sycl_impl

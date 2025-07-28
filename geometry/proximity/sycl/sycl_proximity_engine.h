@@ -8,7 +8,7 @@
 #include "drake/geometry/geometry_ids.h"
 #include "drake/geometry/proximity/hydroelastic_internal.h"
 #include "drake/geometry/proximity/sycl/sycl_hydroelastic_surface.h"
-#include "drake/geometry/proximity/sycl/utils/sycl_memory_manager.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_host_structs.h"
 #include "drake/math/rigid_transform.h"
 
 namespace drake {
@@ -120,10 +120,41 @@ class SyclProximityEngineAttorney {
   static std::vector<double> get_debug_polygon_vertices(
       SyclProximityEngine::Impl* impl);
   // Required for testing the BVH
-  static DeviceBVHData get_bvh_data(SyclProximityEngine::Impl* impl);
-  static SyclMemoryManager get_mem_mgr(SyclProximityEngine::Impl* impl);
-  static sycl::queue get_q_device(SyclProximityEngine::Impl* impl);
   static HostMeshData get_mesh_data(SyclProximityEngine::Impl* impl);
+  static uint32_t get_num_meshes(SyclProximityEngine::Impl* impl);
+
+  // Testing BVH structure and properties
+  static HostBVH get_host_bvh(SyclProximityEngine::Impl* impl,
+                              const int sorted_mesh_id);
+  static HostIndicesAll get_host_indices_all(SyclProximityEngine::Impl* impl);
+  // Computes the height (max depth) of the tree starting from root.
+  // Height is the longest path from root to a leaf (edges).
+  // Returns -1 if tree is invalid (e.g., cycles or bad structure).
+  static int ComputeBVHTreeHeight(const HostBVH& host_bvh);
+  // Counts the number of leaf nodes in the tree.
+  static int CountBVHLeaves(const HostBVH& host_bvh);
+  // Computes a simple balance factor: max(|left_height - right_height|) over
+  // all nodes. Returns 0 for perfectly balanced; higher values indicate
+  // imbalance. Returns -1 if tree is invalid.
+  static int ComputeBVHBalanceFactor(const HostBVH& host_bvh);
+  // Computes average depth across all leaves
+  static double ComputeBVHAverageLeafDepth(const HostBVH& host_bvh);
+  // Verifies if node bounds are correct (e.g., union of children).
+  // Returns true if valid for the whole tree.
+  static bool VerifyBVHBounds(const HostBVH& host_bvh);
+
+  // Computes a histogram of imbalance factors (|left_height - right_height|)
+  // for all internal nodes. Returns a vector where histogram[i] = number of
+  // internal nodes with imbalance i. The size is max_imbalance + 1. Returns
+  // empty vector if tree is invalid.
+  static void ComputeAndPrintBVHImbalanceHistogram(const HostBVH& host_bvh,
+                                                   const std::string& filepath);
+  // Prints the bounding boxes of each node in the BVH tree to std::cout,
+  // traversing from root downwards using BFS.
+  static void PrintBVHNodeBoundingBoxes(const HostBVH& host_bvh,
+                                        const HostIndicesAll& host_indices_all,
+                                        const HostMeshData& mesh_data,
+                                        const int sorted_mesh_id);
 
   // Timing logger access
   static void PrintTimingStats(SyclProximityEngine::Impl* impl);
@@ -133,6 +164,43 @@ class SyclProximityEngineAttorney {
       SortedPair<GeometryId>,
       std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
   get_collision_candidates_to_data(SyclProximityEngine::Impl* impl);
+
+ private:
+  static int ComputeSubtreeHeight(const HostBVH& host_bvh, int node_index,
+                                  std::vector<bool>& visited);
+  // Recursive helper for counting leaves with visited set.
+  static void CountLeavesRecursive(const HostBVH& host_bvh, int node_index,
+                                   std::vector<bool>& visited, int* count);
+
+  // Recursive helper for balance factor.
+  static void ComputeBalanceRecursive(const HostBVH& host_bvh, int node_index,
+                                      std::vector<bool>& visited,
+                                      int* max_imbalance);
+
+  // Recursive helper for average leaf depth.
+  static void ComputeDepthsRecursive(const HostBVH& host_bvh, int node_index,
+                                     std::vector<bool>& visited,
+                                     int current_depth, int* total_depth,
+                                     int* leaf_count);
+  // Recursive helper to verify bounds (e.g., parent bounds == union of
+  // children). Assumes Vector3<double> has cwiseMin/cwiseMax.
+  static bool VerifyBoundsRecursive(const HostBVH& host_bvh, int node_index,
+                                    std::vector<bool>& visited);
+
+  // Computes heights for all nodes using memoization.
+  // Returns vector of heights, or empty if invalid.
+  static std::vector<int> ComputeAllHeights(const HostBVH& host_bvh);
+
+  // Recursive memoized height computation. Returns true if valid.
+  static bool ComputeHeightMemo(const HostBVH& host_bvh, int node,
+                                std::vector<int>& heights);
+
+  static void PrintNodeBoundingBoxesBFS(const HostBVH& host_bvh, int root_index,
+                                        const HostIndicesAll& host_indices_all,
+                                        const HostMeshData& mesh_data,
+                                        const int sorted_mesh_id);
+  static void PrintHistogramJSON(const std::vector<int>& histogram,
+                                 const std::string& filepath);
 };
 
 }  // namespace sycl_impl

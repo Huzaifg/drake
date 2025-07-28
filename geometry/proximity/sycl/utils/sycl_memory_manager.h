@@ -9,6 +9,7 @@
 
 #include "drake/common/eigen_types.h"
 #include "drake/geometry/geometry_ids.h"
+#include "drake/geometry/proximity/sycl/utils/sycl_bvh_structs.h"
 
 namespace drake {
 namespace geometry {
@@ -101,13 +102,6 @@ struct DeviceMeshData {
   uint32_t total_vertices;
 };
 
-struct HostMeshData {
-  std::vector<uint32_t> element_offsets;
-  std::vector<Vector3<double>> element_aabb_min_W;
-  std::vector<Vector3<double>> element_aabb_max_W;
-  uint32_t total_elements;
-};
-
 // Structure to hold collision detection memory
 struct DeviceCollisionData {
   // Broad phase data
@@ -150,55 +144,6 @@ struct DevicePolygonData {
 
   // Debug data
   double* debug_polygon_vertices = nullptr;
-};
-
-// Struct's for BVH broad phase implementation
-// Reference: Warp (https://github.com/NVIDIA/warp/blob/main/warp/native/bvh.h)
-struct BVHPackedNodeHalf {
-  float x;
-  float y;
-  float z;
-  // For non-leaf nodes:
-  // - 'lower.i' represents the index of the left child node.
-  // - 'upper.i' represents the index of the right child node.
-  //
-  // For leaf nodes:
-  // - 'lower.i' indicates the start index of the primitives (AABB) in
-  // 'primitive_indices'.
-  // - 'upper.i' indicates the index just after the last primitive (AABB) in
-  // 'primitive_indices'
-  unsigned int i : 31;
-  unsigned int b : 1;
-};
-struct BVH {
-  BVHPackedNodeHalf* node_lowers;  // See BVHPackedNodeHalf for details
-  BVHPackedNodeHalf* node_uppers;  // See BVHPackedNodeHalf for details
-
-  // used for fast refits
-  int* node_parents;
-  // node_counts are the number of nodes that are children to each node in this
-  // BVH Not owned by the BVH, just points to num_childrenAll in DeviceBVHData
-  int* node_counts;
-  // reordered primitive indices corresponds to the ordering of leaf nodes
-  // Not owned by the BVH, just points to indicesAll in DeviceBVHData
-  uint32_t* primitive_indices;
-
-  int max_depth;
-  int max_nodes;
-  int num_nodes;
-  // since we use packed leaf nodes, the number of them is no longer the number
-  // of items, but variable
-  int num_leaf_nodes;
-
-  // pointer (CPU or GPU) to a single integer index in node_lowers, node_uppers
-  // representing the root of the tree, this is not always the first node
-  // for bottom-up builders
-  int* root;
-
-  // item bounds are not owned by the BVH but by the caller
-  Vector3<double>* item_lowers;
-  Vector3<double>* item_uppers;
-  int num_items;
 };
 
 struct DeviceBVHData {
@@ -248,17 +193,6 @@ struct DeviceCollidingIndicesMemoryChunk {
   uint32_t* collision_indices_B = nullptr;
   uint32_t capacity_ = 0;
   uint32_t size_ = 0;
-};
-
-struct HostMeshPairCollidingIndices {
-  std::vector<uint32_t> collision_indices_A;
-  std::vector<uint32_t> collision_indices_B;
-};
-
-struct HostMeshACollisionCounters {
-  std::vector<uint32_t> collision_counts;
-  uint32_t total_collisions = 0;
-  uint32_t last_element_collision_count = 0;
 };
 
 class SyclMemoryHelper {

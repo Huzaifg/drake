@@ -834,7 +834,8 @@ class ProximityEngine<T>::Impl : public ShapeReifier {
           hydroelastic_geometries_.SoftGeometries(), total_lower_map,
           total_upper_map);
     }
-
+    std::vector<SortedPair<GeometryId>> candidates = FindCollisionCandidates();
+    sycl_engine_->UpdateCollisionCandidates(candidates);
     return sycl_engine_->ComputeSYCLHydroelasticSurface(X_WGs);
   }
 

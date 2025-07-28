@@ -92,14 +92,18 @@ VolumeMesh<double> TransformMesh(const hydroelastic::SoftGeometry& geometry,
 
 // Helper to check BVH properties for a given mesh in the SYCL engine.
 std::tuple<int, int, int, double, bool> CheckSyclBvhProperties(
-    const SyclBvhAttorney::HostBVH& host_bvh, const std::string& filepath) {
-  const int height = SyclBvhAttorney::ComputeHeight(host_bvh);
-  const int num_leaves = SyclBvhAttorney::CountLeaves(host_bvh);
-  const int balance_factor = SyclBvhAttorney::ComputeBalanceFactor(host_bvh);
+    const HostBVH& host_bvh, const std::string& filepath) {
+  const int height =
+      SyclProximityEngineAttorney::ComputeBVHTreeHeight(host_bvh);
+  const int num_leaves = SyclProximityEngineAttorney::CountBVHLeaves(host_bvh);
+  const int balance_factor =
+      SyclProximityEngineAttorney::ComputeBVHBalanceFactor(host_bvh);
   const double average_depth =
-      SyclBvhAttorney::ComputeAverageLeafDepth(host_bvh);
-  const bool bounds_valid = SyclBvhAttorney::VerifyBounds(host_bvh);
-  SyclBvhAttorney::ComputeAndPrintImbalanceHistogram(host_bvh, filepath);
+      SyclProximityEngineAttorney::ComputeBVHAverageLeafDepth(host_bvh);
+  const bool bounds_valid =
+      SyclProximityEngineAttorney::VerifyBVHBounds(host_bvh);
+  SyclProximityEngineAttorney::ComputeAndPrintBVHImbalanceHistogram(host_bvh,
+                                                                    filepath);
   EXPECT_EQ(bounds_valid, true);
 
   return {height, num_leaves, balance_factor, average_depth, bounds_valid};
@@ -961,16 +965,13 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   }
 
   // Tree stats
-  // const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
-  // auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
-  // auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
-  // auto host_mesh_data = SyclProximityEngineAttorney::get_mesh_data(impl);
-  // auto host_indices_all = SyclBvhAttorney::GetHostIndicesAll(
+
+  // auto host_indices_all = SyclProximityEngineAttorney::GetHostIndicesAll(
   //     bvh_data, host_mesh_data.total_elements, mem_mgr, q_device);
-  // for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+  // for (uint32_t i = 0; i < SyclProximityEngineAttorney::get_num_meshes(impl);
+  //      ++i) {
   //   fmt::print("Mesh {}\n", i);
-  //   const auto host_bvh =
-  //       SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+  //   const auto host_bvh = SyclProximityEngineAttorney::get_host_bvh(impl, i);
   //   std::string filepath = fmt::format("histogram_{}.json", i);
   //   const auto [height, num_leaves, balance_factor, average_depth,
   //               bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
@@ -983,12 +984,12 @@ GTEST_TEST(SPETest, ThreeSpheresColliding) {
   // fmt::print("Tree AABBs of all internal nodes\n");
 
   // // Tree AABBs of all internal nodes
-  // for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
+  // for (uint32_t i = 0; i < SyclProximityEngineAttorney::get_num_meshes(impl);
+  //      ++i) {
   //   fmt::print("Mesh {}\n", i);
-  //   const auto host_bvh =
-  //       SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
-  //   SyclBvhAttorney::PrintNodeBoundingBoxes(host_bvh, host_indices_all,
-  //                                           host_mesh_data, i);
+  //   const auto host_bvh = SyclProximityEngineAttorney::get_host_bvh(impl, i);
+  //   SyclProximityEngineAttorney::PrintNodeBoundingBoxes(host_bvh,
+  //                                                       host_indices_all, i);
   // }
 
   // Verify that each of the mismatches is TRULY a false positive from the CPU
@@ -1547,13 +1548,10 @@ GTEST_TEST(SPEBvhTest, TwoSpheresTreeStats) {
   // Extract Impl from the engine in order to get access to the private data
   // members
   const auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
-  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
-  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
   // Check BVH properties for both spheres using the helper
-  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
-    const auto host_bvh =
-        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+  for (uint32_t i = 0; i < SyclProximityEngineAttorney::get_num_meshes(impl);
+       ++i) {
+    const auto host_bvh = SyclProximityEngineAttorney::get_host_bvh(impl, i);
     std::string filepath = fmt::format("histogram_{}.json", i);
     const auto [height, num_leaves, balance_factor, average_depth,
                 bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
@@ -1660,13 +1658,10 @@ GTEST_TEST(SPEBvhTest, ThreeSpheresTreeStats) {
   // Extract Impl from the engine in order to get access to the private data
   // members
   const auto impl = SyclProximityEngineAttorney::get_impl(engine);
-  const auto bvh_data = SyclProximityEngineAttorney::get_bvh_data(impl);
-  auto mem_mgr = SyclProximityEngineAttorney::get_mem_mgr(impl);
-  auto q_device = SyclProximityEngineAttorney::get_q_device(impl);
   // Check BVH properties for all three spheres using the helper
-  for (uint32_t i = 0; i < bvh_data.num_meshes; ++i) {
-    const auto host_bvh =
-        SyclBvhAttorney::GetHostBVH(bvh_data, i, mem_mgr, q_device);
+  for (uint32_t i = 0; i < SyclProximityEngineAttorney::get_num_meshes(impl);
+       ++i) {
+    const auto host_bvh = SyclProximityEngineAttorney::get_host_bvh(impl, i);
     std::string filepath = fmt::format("histogram_{}.json", i);
     const auto [height, num_leaves, balance_factor, average_depth,
                 bounds_valid] = CheckSyclBvhProperties(host_bvh, filepath);
