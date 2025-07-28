@@ -92,6 +92,7 @@ class BVHBroadPhase {
       std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                              DeviceMeshPairCollidingIndices>>&
           collision_candidates_to_data,
+      DeviceCollidingIndicesMemoryChunk& pair_chunk_,
       SyclMemoryManager& memory_manager, sycl::queue& q_device);
   // Construct and return BVH for all meshes in the scene
   // They will be indexed by same order of sorted_geometry ids

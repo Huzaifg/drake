@@ -10,7 +10,7 @@ package(default_visibility = ["//visibility:private"])
 drake_cc_library(
        name = "sycl_memory_manager",
        srcs = ["utils/sycl_memory_manager.cc"],
-       hdrs = ["utils/sycl_memory_manager.h"],
+       hdrs = ["utils/sycl_memory_manager.h", "utils/sycl_kernel_utils.h"],
        visibility = ["//geometry:__pkg__"],
        copts = [
           "-fsycl",

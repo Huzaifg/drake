@@ -512,7 +512,7 @@ void BVHBroadPhase::build(
             }
 
             // converts LBB range left <= i <= right
-            // to convention: left <= i < right (copied from Warp for now)
+            // to convention: left <= i < right
             int left = range_leftsAll[global_node_index];
             int right = range_rightsAll[global_node_index] + 1;
 
@@ -982,7 +982,7 @@ void BVHBroadPhase::BroadPhase(
     DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
     std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                            DeviceMeshPairCollidingIndices>>&
-        collision_candidates_to_data,
+        collision_candidates_to_data, DeviceCollidingIndicesMemoryChunk& pair_chunk_,
     SyclMemoryManager& memory_manager, sycl::queue& q_device) {
   auto policy = oneapi::dpl::execution::make_device_policy(q_device);
   // Run a refit with the new AABBs - If the BVH is just built, then we don't
@@ -1040,10 +1040,19 @@ void BVHBroadPhase::BroadPhase(
                 sizeof(uint32_t))
         .wait();
     cc.total_collisions = total_collisions + cc.last_element_collision_count;
-    // Resize buffers that store actual collision pairs
-    SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
-        memory_manager, ci, cc.total_collisions);
   }
+
+  // Get pointers to the chunk of collision pair indices memory
+  // that we need to write to
+  uint32_t offset = 0;
+  for (auto& [key, value] : collision_candidates_to_data) {
+    auto& [cc, ci] = value;
+    auto [mesh_a, mesh_b] = key_to_pair(key);
+    SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
+        memory_manager, ci, pair_chunk_, cc.total_collisions, offset);
+    offset += cc.total_collisions;
+  }
+  pair_chunk_.size_ = offset;
 
   // Compute the actual collision pairs
   std::vector<sycl::event> pair_events_vec;

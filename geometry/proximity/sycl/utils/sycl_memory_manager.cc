@@ -1,6 +1,8 @@
 
 #include "geometry/proximity/sycl/utils/sycl_memory_manager.h"
 
+#include "geometry/proximity/sycl/utils/sycl_kernel_utils.h"
+
 #include "drake/common/eigen_types.h"
 #include "drake/geometry/geometry_ids.h"
 
@@ -80,24 +82,107 @@ void SyclMemoryHelper::AllocateDeviceMeshPairCollidingIndicesMemory(
   mesh_pair_colliding_indices.size_ = 0;
 }
 
-void SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
-    SyclMemoryManager& mem_mgr,
-    DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
-    uint32_t new_size) {
-  if (new_size > mesh_pair_colliding_indices.capacity_) {
-    // No need to copy any of the data since this is rewritten anyways
-    mem_mgr.Free(mesh_pair_colliding_indices.collision_indices_A);
-    mem_mgr.Free(mesh_pair_colliding_indices.collision_indices_B);
-    mesh_pair_colliding_indices.capacity_ =
-        std::max(static_cast<uint32_t>(
-                     std::ceil(mesh_pair_colliding_indices.capacity_ * 1.2)),
-                 new_size);
-    mesh_pair_colliding_indices.collision_indices_A =
-        mem_mgr.AllocateDevice<uint32_t>(mesh_pair_colliding_indices.capacity_);
-    mesh_pair_colliding_indices.collision_indices_B =
-        mem_mgr.AllocateDevice<uint32_t>(mesh_pair_colliding_indices.capacity_);
+void SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
+    SyclMemoryManager& mem_mgr, DeviceCollidingIndicesMemoryChunk& pair_chunk,
+    std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
+                                           DeviceMeshPairCollidingIndices>>&
+        collision_candidates_to_data,
+    const std::vector<std::pair<uint32_t, uint32_t>>& collision_candidates,
+    const DeviceMeshData& mesh_data) {
+  // Compute the heuristic total amount of memory needed for all collision
+  // pairs of all the meshes in the scene This will be resized based on the
+  // number of collisions found
+  uint32_t total_size_needed_pairs = 0;
+  for (const auto& pair : collision_candidates) {
+    total_size_needed_pairs +=
+        std::max(1u, mesh_data.element_counts[pair.first] *
+                         mesh_data.element_counts[pair.second] / 5);
   }
-  mesh_pair_colliding_indices.size_ = new_size;
+
+  // Round such that memory is allocated in whole MBs
+  // Always round up
+  // Convert count to bytes, round to MB, then convert back to count
+  uint32_t bytes_needed = total_size_needed_pairs * sizeof(uint32_t);
+  uint32_t mb_needed = std::max(1u, bytes_needed / (1024 * 1024));
+  uint32_t rounded_size_needed = (mb_needed * 1024 * 1024) / sizeof(uint32_t);
+
+  // Shrink if needed size is less than 50% of current capacity. This prevents
+  // thrashing when size fluctuates around the current capacity.
+  constexpr uint32_t shrink_threshold_percent = 50;
+  constexpr uint32_t min_buffer_size_mb = 1;
+  uint32_t min_buffer_size =
+      (min_buffer_size_mb * 1024 * 1024) / sizeof(uint32_t);
+
+  // Ensure we don't shrink below minimum size.
+  rounded_size_needed = std::max(rounded_size_needed, min_buffer_size);
+
+  uint32_t shrink_threshold =
+      (pair_chunk.capacity_ * shrink_threshold_percent) / 100;
+
+  // Check if we need to resize the chunk (grow or shrink).
+  bool need_resize = false;
+  if (rounded_size_needed > pair_chunk.capacity_) {
+    // Need to grow
+    need_resize = true;
+  } else if (rounded_size_needed < shrink_threshold &&
+             pair_chunk.capacity_ > 0) {
+    // Need to shrink (only if we have existing capacity and new size is
+    // significantly smaller).
+    need_resize = true;
+  }
+
+  if (need_resize) {
+    if (pair_chunk.collision_indices_A)
+      mem_mgr.Free(pair_chunk.collision_indices_A);
+    if (pair_chunk.collision_indices_B)
+      mem_mgr.Free(pair_chunk.collision_indices_B);
+
+    pair_chunk.collision_indices_A =
+        mem_mgr.AllocateDevice<uint32_t>(rounded_size_needed);
+    pair_chunk.collision_indices_B =
+        mem_mgr.AllocateDevice<uint32_t>(rounded_size_needed);
+    pair_chunk.capacity_ = rounded_size_needed;
+  }
+  pair_chunk.size_ = 0;
+
+  // 3) For all the collision candidates assign memory to the collision
+  // counters.
+  for (const auto& pair : collision_candidates) {
+    uint64_t col_key = key(pair.first, pair.second);
+    if (collision_candidates_to_data.find(col_key) ==
+        collision_candidates_to_data.end()) {
+      // New pair pair found - allocate memory for the collision counters and
+      // get pointer to collision indices
+      DeviceMeshACollisionCounters cc;
+      cc.collision_counts = mem_mgr.AllocateDevice<uint32_t>(
+          mesh_data.element_counts[pair.first]);
+      cc.total_collisions = 0;
+      cc.size_ = mesh_data.element_counts[pair.first];
+      cc.last_element_collision_count = 0;
+      DeviceMeshPairCollidingIndices ci;
+      //   ci.capacity_ = 0; // This is probably not needed
+      ci.size_ = 0;
+      collision_candidates_to_data[col_key] = std::make_pair(cc, ci);
+    } else {
+      // Existing pair found - reset the total collision and last element
+      // collision count. Size of cc will stay the same and size of ci will be
+      // resized after computation of total collisions in
+      // BVHBroadPhase::BroadPhase.
+      auto& [cc, ci] = collision_candidates_to_data[col_key];
+      cc.total_collisions = 0;
+      cc.last_element_collision_count = 0;
+    }
+  }
+}
+void SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
+    SyclMemoryManager& mem_mgr, DeviceMeshPairCollidingIndices& ci,
+    const DeviceCollidingIndicesMemoryChunk& pair_chunk,
+    const uint32_t new_size, const uint32_t offset) {
+  ci.collision_indices_A = pair_chunk.collision_indices_A + offset;
+  ci.collision_indices_B = pair_chunk.collision_indices_B + offset;
+  // This only needs to be set for the tests to work - the tests directly query
+  // the ci pointers for data
+  ci.size_ = new_size;
 }
 
 void SyclMemoryHelper::AllocateMeshElementVerticesMemory(
@@ -361,6 +446,15 @@ void SyclMemoryHelper::FreePolygonMemory(SyclMemoryManager& mem_mgr,
                                          DevicePolygonData& polygon_data) {
   FreeFullPolygonMemory(mem_mgr, polygon_data);
   FreeCompactPolygonMemory(mem_mgr, polygon_data);
+}
+void SyclMemoryHelper::FreeDeviceCollidingIndicesMemoryChunk(
+    SyclMemoryManager& mem_mgr, DeviceCollidingIndicesMemoryChunk& pair_chunk) {
+  mem_mgr.Free(pair_chunk.collision_indices_A);
+  mem_mgr.Free(pair_chunk.collision_indices_B);
+  pair_chunk.collision_indices_A = nullptr;
+  pair_chunk.collision_indices_B = nullptr;
+  pair_chunk.capacity_ = 0;
+  pair_chunk.size_ = 0;
 }
 
 }  // namespace sycl_impl

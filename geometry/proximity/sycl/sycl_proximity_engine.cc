@@ -328,20 +328,16 @@ class SyclProximityEngine::Impl {
       SyclMemoryHelper::FreeCompactPolygonMemory(mem_mgr_, polygon_data_);
       SyclMemoryHelper::FreeBVHSingleMeshAndAllMeshMemory(mem_mgr_, bvh_data_);
     }
-    // Free device memory for all collision candidate pairs
+    SyclMemoryHelper::FreeDeviceCollidingIndicesMemoryChunk(mem_mgr_,
+                                                            pair_chunk_);
+    // Free device memory for all collision counters
     for (auto& entry : collision_candidates_to_data_) {
       auto& cc = entry.second.first;
-      auto& ci = entry.second.second;
       mem_mgr_.Free(cc.collision_counts);
-      // Free DeviceMeshPairCollidingIndices memory
-      if (ci.collision_indices_A != nullptr) {
-        mem_mgr_.Free(ci.collision_indices_A);
-        mem_mgr_.Free(ci.collision_indices_B);
-        ci.collision_indices_A = nullptr;
-        ci.collision_indices_B = nullptr;
-      }
-      // If you add more device allocations to DeviceMeshPairCollidingIndices,
-      // free them here
+      cc.collision_counts = nullptr;
+      cc.total_collisions = 0;
+      cc.last_element_collision_count = 0;
+      cc.size_ = 0;
     }
   }
 
@@ -391,41 +387,12 @@ class SyclProximityEngine::Impl {
       }
     }
 
-    // Create the map of collision_candidate pairs to a pair
-    // DeviceMeshACollisionCounters and DeviceMeshPairCollidingIndices.
-    // DeviceMeshACollisionCountes stores the number of collisions each element
-    // of pair.first has. DeviceMeshPairCollidingIndices stores the indices of
-    // the collisions - To save some memory, its memory is dynamically managed.
-    for (const auto& pair : collision_candidates_) {
-      if (collision_candidates_to_data_.find(key(pair.first, pair.second)) ==
-          collision_candidates_to_data_.end()) {
-        DeviceMeshACollisionCounters cc;
-        cc.collision_counts = mem_mgr_.AllocateDevice<uint32_t>(
-            mesh_data_.element_counts[pair.first]);
-        cc.total_collisions = 0;
-        cc.size_ = mesh_data_.element_counts[pair.first];
-        cc.last_element_collision_count = 0;
-        DeviceMeshPairCollidingIndices ci;
-        // Maximum number of checks
-        const uint32_t max_checks = mesh_data_.element_counts[pair.first] *
-                                    mesh_data_.element_counts[pair.second];
-        // Reasonable allocation
-        const uint32_t allocation_size =
-            std::max(1u, max_checks / 5);  // 20% of max
-        SyclMemoryHelper::AllocateDeviceMeshPairCollidingIndicesMemory(
-            mem_mgr_, ci, allocation_size);
-        collision_candidates_to_data_[key(pair.first, pair.second)] =
-            std::make_pair(cc, ci);
-      } else {
-        // Reset the total collision and last element collision count.
-        // Size of cc will stay the same and size of ci will be resized after
-        // computation of total collisions in BVHBroadPhase::BroadPhase.
-        auto& [cc, ci] =
-            collision_candidates_to_data_[key(pair.first, pair.second)];
-        cc.total_collisions = 0;
-        cc.last_element_collision_count = 0;
-      }
-    }
+    // Allocates memory for the chunk of memory that holds all the collision
+    // indices (global) and collision counters for each MeshA in the
+    // collision_candidates_
+    SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
+        mem_mgr_, pair_chunk_, collision_candidates_to_data_,
+        collision_candidates_, mesh_data_);
   }
 
   // Compute hydroelastic surfaces
@@ -682,7 +649,8 @@ class SyclProximityEngine::Impl {
     // Blocking event call
     bvh_broad_phase_.BroadPhase(
         mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
-        element_aabb_event, collision_candidates_to_data_, mem_mgr_, q_device_);
+        element_aabb_event, collision_candidates_to_data_, pair_chunk_,
+        mem_mgr_, q_device_);
 
     // =========================================
     // Command group 2: Generate candidate tet pairs using NaiveBroadPhase
@@ -1022,6 +990,7 @@ class SyclProximityEngine::Impl {
   std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                          DeviceMeshPairCollidingIndices>>
       collision_candidates_to_data_;
+  DeviceCollidingIndicesMemoryChunk pair_chunk_;
 
   std::vector<Vector3<double>> sorted_total_lower_;
   std::vector<Vector3<double>> sorted_total_upper_;
