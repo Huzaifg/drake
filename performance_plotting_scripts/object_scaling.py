@@ -39,7 +39,7 @@ def main():
     
     
     run_types = ["sycl-gpu", "drake-cpu"]
-    perf_folder = "performance_jsons"
+    perf_folder = "performance_jsons_bvh_1s"
 
     # Store all data in a nested dictionary: all_data[run_type][spacing][num_gpp][data_type]
     all_data = {run_type: {} for run_type in run_types}
@@ -68,42 +68,43 @@ def main():
     
     # Analyze distribution of candidate tets and faces inserted for the dense vs sparse object placements
     plot_faces_inserted_vs_num_gpp(all_data, run_types, spacings, num_gpp)
-    if not os.path.exists(f"{base_dir}/plots"):
-        os.makedirs(f"{base_dir}/plots")
-    plt.savefig(f"{base_dir}/plots/object_scaling_faces_inserted_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_faces_inserted_vs_num_gpp.png")
+    plot_dir = "plots_bvh_1s"
+    if not os.path.exists(f"{base_dir}/{plot_dir}"):
+        os.makedirs(f"{base_dir}/{plot_dir}")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_faces_inserted_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_faces_inserted_vs_num_gpp.png")
     plt.show()
     plt.close()
     
     plot_candidate_tets_vs_num_gpp(all_data, run_types, spacings, num_gpp)
-    plt.savefig(f"{base_dir}/plots/object_scaling_candidate_tets_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_candidate_tets_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_candidate_tets_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_candidate_tets_vs_num_gpp.png")
     plt.show()
     plt.close()
     
     
     # Analyze distribution of timing overall for the dense vs sparse object placements
     plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, ["1", "2"])
-    plt.savefig(f"{base_dir}/plots/object_scaling_timing_overall_1_2_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_timing_overall_1_2_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_vs_num_gpp.png")
     plt.show()
     plt.close()
     
     plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, ["1", "2", "5"])
-    plt.savefig(f"{base_dir}/plots/object_scaling_timing_overall_1_2_5_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_timing_overall_1_2_5_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_vs_num_gpp.png")
     plt.show()
     plt.close()
     
     plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, ["1", "2", "5", "10"])
-    plt.savefig(f"{base_dir}/plots/object_scaling_timing_overall_1_2_5_10_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_timing_overall_1_2_5_10_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_10_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_10_vs_num_gpp.png")
     plt.show()
     plt.close() 
     
     plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp)
-    plt.savefig(f"{base_dir}/plots/object_scaling_timing_overall_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_timing_overall_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_vs_num_gpp.png")
     plt.show()
     plt.close()
     
@@ -111,15 +112,15 @@ def main():
     
     # Narrow phase vs num_gpp
     plot_narrow_phase_timing_vs_num_gpp(all_data, run_types, spacings, num_gpp)
-    plt.savefig(f"{base_dir}/plots/object_scaling_narrow_phase_timing_vs_num_gpp.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_narrow_phase_timing_vs_num_gpp.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_narrow_phase_timing_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_narrow_phase_timing_vs_num_gpp.png")
     plt.show()
     plt.close()
     
     
     plot_narrow_phase_timing_vs_candidate_tets(all_data, run_types, spacings, num_gpp)
-    plt.savefig(f"{base_dir}/plots/object_scaling_narrow_phase_timing_vs_candidate_tets.png",dpi=600)
-    print("Saved plot to ", f"{base_dir}/plots/object_scaling_narrow_phase_timing_vs_candidate_tets.png")
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_narrow_phase_timing_vs_candidate_tets.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_narrow_phase_timing_vs_candidate_tets.png")
     plt.show()
     plt.close()
     
