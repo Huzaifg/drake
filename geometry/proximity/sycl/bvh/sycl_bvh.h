@@ -92,6 +92,7 @@ class BVHBroadPhase {
       std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                              DeviceMeshPairCollidingIndices>>&
           collision_candidates_to_data,
+      uint32_t num_mesh_collisions,
       DeviceCollidingIndicesMemoryChunk& pair_chunk_,
       DeviceCollisionCountersMemoryChunk& counters_chunk_,
       DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk_,
@@ -138,6 +139,12 @@ class BVHBroadPhase {
                                     DeviceMeshACollisionCounters& cc,
                                     DeviceMeshPairCollidingIndices& ci,
                                     sycl::queue& q_device);
+  sycl::event ComputeCollisionPairsAll(
+      const uint32_t* meshAs, const uint32_t* meshBs,
+      const DeviceBVHData& bvh_data, const DeviceMeshData& mesh_data,
+      DeviceCollisionCountersMemoryChunk& counters_chunk,
+      DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk,
+      DeviceCollidingIndicesMemoryChunk& pair_chunk, sycl::queue& q_device);
 
   bool bvh_built_ = false;
   bool bvh_refitted_ = false;

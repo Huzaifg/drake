@@ -234,7 +234,8 @@ void PrintPerformanceStats(
   if (env_var != nullptr) {
     runtime_device = env_var;
   }
-  std::string out_dir = "/home/huzaifaunjhawala/drake/performance_jsons_bvh/";
+  std::string out_dir =
+      "/home/huzaifaunjhawala/drake_bvhSingleKernel/performance_jsons_bvh_opt/";
   // Create output directory if it doesn't exist
   if (!std::filesystem::exists(out_dir)) {
     std::filesystem::create_directories(out_dir);

@@ -199,6 +199,8 @@ struct DeviceCollisionCountersMemoryChunk {
   uint32_t* collision_counts = nullptr;
   uint32_t capacity_ = 0;
   uint32_t size_ = 0;
+  uint32_t last_element_collision_count = 0;
+  uint32_t total_collisions = 0;
 };
 
 struct DeviceCollisionCountersOffsetsMemoryChunk {

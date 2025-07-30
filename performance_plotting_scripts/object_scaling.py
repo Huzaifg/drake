@@ -33,13 +33,13 @@ def main():
     base_dir = os.path.dirname(os.getcwd())
     demo_name = "objects_scaling"
     spacings = ["0.1", "0.05"]
-    num_gpp = ["1", "2", "5", "10", "20"]
+    num_gpp = ["1", "2", "5", "10", "20", "33"]
     # Make list of all run combos spacings_num_gpp
     runs = [f"{spacing}_{gpp}" for spacing in spacings for gpp in num_gpp]
     
     
     run_types = ["sycl-gpu", "drake-cpu"]
-    perf_folder = "performance_jsons_bvh_1s"
+    perf_folder = "performance_jsons_bvh_opt"
 
     # Store all data in a nested dictionary: all_data[run_type][spacing][num_gpp][data_type]
     all_data = {run_type: {} for run_type in run_types}
@@ -101,6 +101,12 @@ def main():
     print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_10_vs_num_gpp.png")
     plt.show()
     plt.close() 
+    
+    plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, ["1", "2", "5", "10", "20"])
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_10_20_vs_num_gpp.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_1_2_5_10_20_vs_num_gpp.png")
+    plt.show()
+    plt.close()
     
     plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp)
     plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_vs_num_gpp.png",dpi=600)

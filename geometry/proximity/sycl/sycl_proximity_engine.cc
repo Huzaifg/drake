@@ -353,6 +353,8 @@ class SyclProximityEngine::Impl {
       }
     }
 
+    num_mesh_collisions_ = collision_candidates_.size();
+
     // Allocates memory for the chunk of memory that holds all the collision
     // indices (global) and collision counters for each MeshA in the
     // collision_candidates_
@@ -362,7 +364,7 @@ class SyclProximityEngine::Impl {
     // Set the offsets for the collision counters
     uint32_t running_offset = 0;
     counters_offsets_chunk_.size_ = 0;
-    for (uint32_t i = 0; i < collision_candidates_.size(); i++) {
+    for (uint32_t i = 0; i < num_mesh_collisions_; i++) {
       uint32_t mesh_a = mesh_pair_ids_.meshAs[i];
       q_device_
           .memcpy(counters_offsets_chunk_.mesh_a_offsets + i, &running_offset,
@@ -625,9 +627,9 @@ class SyclProximityEngine::Impl {
     // Blocking event call
     bvh_broad_phase_.BroadPhase(
         mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
-        element_aabb_event, collision_candidates_to_data_, pair_chunk_,
-        counters_chunk_, counters_offsets_chunk_, mesh_pair_ids_, mem_mgr_,
-        q_device_);
+        element_aabb_event, collision_candidates_to_data_, num_mesh_collisions_,
+        pair_chunk_, counters_chunk_, counters_offsets_chunk_, mesh_pair_ids_,
+        mem_mgr_, q_device_);
 
     // Chunk size gives us all the element checks that we need to perform
     total_narrow_phase_checks_ = pair_chunk_.size_;
@@ -899,6 +901,8 @@ class SyclProximityEngine::Impl {
   // Number of geometries
   uint32_t num_geometries_ = 0;
 
+  uint32_t num_mesh_collisions_ = 0;
+
   uint32_t total_vertices_ = 0;
   uint32_t total_elements_ = 0;
   uint32_t total_nodes_ = 0;
@@ -1154,10 +1158,57 @@ SyclProximityEngineAttorney::get_collision_candidates_to_data(
       std::pair<HostMeshACollisionCounters, HostMeshPairCollidingIndices>>
       host_collision_candidates_to_data;
   auto q = impl->q_device_;
+
+  // Copy over chunked collision counts.
+  // This array is scanned for all the mesh collision candidates.
+  std::vector<uint32_t> collision_counts_chunk_host(
+      impl->counters_chunk_.size_);
+  q.memcpy(collision_counts_chunk_host.data(),
+           impl->counters_chunk_.collision_counts,
+           impl->counters_chunk_.size_ * sizeof(uint32_t))
+      .wait();
+  // For the tests we need to figure out how many collisions each mesh pair has.
+  // We will thus use the scanned array to extract the total collisions for each
+  // pair.
+  uint32_t collisions_counted = 0;
+  uint32_t size_passed = 0;
+  for (int i = 0; i < impl->num_mesh_collisions_; i++) {
+    uint32_t mesh_a = impl->mesh_pair_ids_.meshAs[i];
+    uint32_t mesh_b = impl->mesh_pair_ids_.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = impl->collision_candidates_to_data_[col_key];
+    // If we are in the last mesh collision pair, then direcly used the complete
+    // total collisions of the scene.
+    size_passed += cc.size_;
+    if (i == impl->num_mesh_collisions_ - 1) {
+      cc.total_collisions =
+          impl->counters_chunk_.total_collisions - collisions_counted;
+    } else {
+      cc.total_collisions =
+          collision_counts_chunk_host[size_passed] - collisions_counted;
+    }
+    collisions_counted += cc.total_collisions;
+  }
+  // With the total collisions set for each mesh pair set, we can find the right
+  // pointers to each pairs collision indices
+  uint32_t running_offset = 0;
+  for (int i = 0; i < impl->num_mesh_collisions_; i++) {
+    uint32_t mesh_a = impl->mesh_pair_ids_.meshAs[i];
+    uint32_t mesh_b = impl->mesh_pair_ids_.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = impl->collision_candidates_to_data_[col_key];
+    ci.size_ = cc.total_collisions;
+    ci.collision_indices_A =
+        impl->pair_chunk_.collision_indices_A + running_offset;
+    ci.collision_indices_B =
+        impl->pair_chunk_.collision_indices_B + running_offset;
+    running_offset += cc.total_collisions;
+  }
+
   for (auto& [key, value] : impl->collision_candidates_to_data_) {
     auto& [cc, ci] = value;
     HostMeshACollisionCounters host_cc;
-    host_cc.last_element_collision_count = cc.last_element_collision_count;
+    // host_cc.last_element_collision_count = cc.last_element_collision_count;
     host_cc.total_collisions = cc.total_collisions;
     host_cc.collision_counts.resize(cc.size_);
 

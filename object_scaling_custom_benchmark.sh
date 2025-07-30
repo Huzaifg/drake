@@ -5,7 +5,7 @@ bazel run //examples/hydroelastic/objects_scaling:objects_scaling_run_dynamics -
 ONEAPI_DEVICE_SELECTOR=cuda:* bazel run //examples/hydroelastic/objects_scaling:objects_scaling_run_dynamics -- --use_sycl=true --num_grippers=1 --num_peppers=1 --object_spacing=0.1 --print_perf=true
 
 # Define object counts and spacing values
-OBJECT_COUNTS=(1 2 5 10 20)
+OBJECT_COUNTS=(1 2 5 10 20 33)
 SPACING_VALUES=(0.05 0.1)
 
 
