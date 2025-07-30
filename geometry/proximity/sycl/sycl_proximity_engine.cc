@@ -91,6 +91,8 @@ class SyclProximityEngine::Impl {
     SyclMemoryHelper::AllocateMeshMemory(mem_mgr_, mesh_data_, num_geometries_);
     SyclMemoryHelper::AllocateBVHAllMeshMemory(mem_mgr_, bvh_data_,
                                                num_geometries_);
+    SyclMemoryHelper::AllocateDeviceCollisionCountersOffsetsMemoryChunk(
+        mem_mgr_, counters_offsets_chunk_, num_geometries_);
     bvh_data_.num_meshes = num_geometries_;
 
     // First compute totals and build lookup data
@@ -297,15 +299,12 @@ class SyclProximityEngine::Impl {
     }
     SyclMemoryHelper::FreeDeviceCollidingIndicesMemoryChunk(mem_mgr_,
                                                             pair_chunk_);
-    // Free device memory for all collision counters
-    for (auto& entry : collision_candidates_to_data_) {
-      auto& cc = entry.second.first;
-      mem_mgr_.Free(cc.collision_counts);
-      cc.collision_counts = nullptr;
-      cc.total_collisions = 0;
-      cc.last_element_collision_count = 0;
-      cc.size_ = 0;
-    }
+    SyclMemoryHelper::FreeDeviceCollisionCountersMemoryChunk(mem_mgr_,
+                                                             counters_chunk_);
+    SyclMemoryHelper::FreeDeviceCollisionCountersOffsetsMemoryChunk(
+        mem_mgr_, counters_offsets_chunk_);
+    if (mesh_pair_ids_.meshAs) mem_mgr_.Free(mesh_pair_ids_.meshAs);
+    if (mesh_pair_ids_.meshBs) mem_mgr_.Free(mesh_pair_ids_.meshBs);
   }
 
   // Check if SYCL is available
@@ -358,8 +357,20 @@ class SyclProximityEngine::Impl {
     // indices (global) and collision counters for each MeshA in the
     // collision_candidates_
     SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
-        mem_mgr_, pair_chunk_, collision_candidates_to_data_,
-        collision_candidates_, mesh_data_);
+        mem_mgr_, pair_chunk_, counters_chunk_, collision_candidates_to_data_,
+        collision_candidates_, mesh_data_, mesh_pair_ids_);
+    // Set the offsets for the collision counters
+    uint32_t running_offset = 0;
+    counters_offsets_chunk_.size_ = 0;
+    for (uint32_t i = 0; i < collision_candidates_.size(); i++) {
+      uint32_t mesh_a = mesh_pair_ids_.meshAs[i];
+      q_device_
+          .memcpy(counters_offsets_chunk_.mesh_a_offsets + i, &running_offset,
+                  sizeof(uint32_t))
+          .wait();
+      running_offset += mesh_data_.element_counts[mesh_a];
+      counters_offsets_chunk_.size_++;
+    }
   }
 
   // Compute hydroelastic surfaces
@@ -615,7 +626,8 @@ class SyclProximityEngine::Impl {
     bvh_broad_phase_.BroadPhase(
         mesh_data_, sorted_total_lower_, sorted_total_upper_, bvh_data_,
         element_aabb_event, collision_candidates_to_data_, pair_chunk_,
-        mem_mgr_, q_device_);
+        counters_chunk_, counters_offsets_chunk_, mesh_pair_ids_, mem_mgr_,
+        q_device_);
 
     // Chunk size gives us all the element checks that we need to perform
     total_narrow_phase_checks_ = pair_chunk_.size_;
@@ -877,6 +889,9 @@ class SyclProximityEngine::Impl {
                                          DeviceMeshPairCollidingIndices>>
       collision_candidates_to_data_;
   DeviceCollidingIndicesMemoryChunk pair_chunk_;
+  DeviceCollisionCountersMemoryChunk counters_chunk_;
+  DeviceCollisionCountersOffsetsMemoryChunk counters_offsets_chunk_;
+  DeviceMeshPairIds mesh_pair_ids_;
 
   std::vector<Vector3<double>> sorted_total_lower_;
   std::vector<Vector3<double>> sorted_total_upper_;

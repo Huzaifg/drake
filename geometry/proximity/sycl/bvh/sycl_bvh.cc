@@ -33,6 +33,7 @@ class PackLeavesKernel;
 class RefitKernel;
 class ComputeCollisionCountsKernel;
 class ComputeCollisionPairsKernel;
+class ComputeCollisionCountsAllKernel;
 
 void BVHBroadPhase::build(
     const DeviceMeshData& mesh_data,
@@ -853,6 +854,134 @@ sycl::event BVHBroadPhase::ComputeCollisionCounts(
   return compute_collision_counts_event;
 }
 
+sycl::event BVHBroadPhase::ComputeCollisionCountsAll(
+    const uint32_t* meshAs, const uint32_t* meshBs,
+    const DeviceBVHData& bvh_data, const DeviceMeshData& mesh_data,
+    DeviceCollisionCountersMemoryChunk& counters_chunk,
+    DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk,
+    sycl::event& event_to_depend_on, sycl::queue& q_device) {
+  auto compute_collision_counts_all_event = q_device.submit([&](sycl::handler&
+                                                                    h) {
+    h.depends_on({event_to_depend_on});
+    const uint32_t work_group_size = 512;
+    const uint32_t total_threads =
+        RoundUpToWorkGroupSize(counters_chunk.size_, work_group_size);
+    h.parallel_for<ComputeCollisionCountsAllKernel>(
+        sycl::nd_range<1>(sycl::range<1>(total_threads),
+                          sycl::range<1>(work_group_size)),
+        [=, bvhAll = bvh_data.bvhAll,
+         element_offsets = mesh_data.element_offsets,
+         element_aabb_min_W = mesh_data.element_aabb_min_W,
+         element_aabb_max_W = mesh_data.element_aabb_max_W,
+         indicesAll = bvh_data.indicesAll,
+         global_collision_counts = counters_chunk.collision_counts,
+         global_counters_offsets = counters_offsets_chunk.mesh_a_offsets,
+         total_offsets = counters_offsets_chunk.size_,
+         max_pressures = mesh_data.max_pressures,
+         min_pressures =
+             mesh_data.min_pressures] [[intel::kernel_args_restrict]] (
+            sycl::nd_item<1> item) {
+          uint32_t global_thread_id = item.get_global_id(0);
+          if (global_thread_id >= counters_chunk.size_) {
+            return;
+          }
+
+          // Get candidate pair number
+          size_t candidate_pair_number =
+              upper_bound_device(global_counters_offsets,
+                                 global_counters_offsets + total_offsets,
+                                 global_thread_id) -
+              global_counters_offsets - 1;
+          uint32_t mesh_a = meshAs[candidate_pair_number];
+          uint32_t mesh_b = meshBs[candidate_pair_number];
+          BVH& bvh_b = bvhAll[mesh_b];
+          BVHPackedNodeHalf* node_lowers = bvh_b.node_lowers;
+          BVHPackedNodeHalf* node_uppers = bvh_b.node_uppers;
+
+          uint32_t element_offset_A = element_offsets[mesh_a];
+          uint32_t element_offset_B = element_offsets[mesh_b];
+          uint32_t elementId_A =
+              global_thread_id - global_counters_offsets[candidate_pair_number];
+          uint32_t global_elementId_A = elementId_A + element_offset_A;
+
+          // We process in the order of morton code's.
+          // This is because two elements that have similar morton codes
+          // and are thus closer to each other would tend to traverse the
+          // tree to similar depths.
+          uint32_t local_tetId_A = indicesAll[global_elementId_A];
+          // TODO (Huzaifa): This access will be uncoalesced since we are
+          // accessing my morton order code. Evaluate trade off between
+          // divergence if we don't do morton order code and memory
+          // access pattern if we do.
+          uint32_t global_primitive_index_A = local_tetId_A + element_offset_A;
+          const Vector3<double> lower_W_Ai =
+              element_aabb_min_W[global_primitive_index_A];
+          const Vector3<double> upper_W_Ai =
+              element_aabb_max_W[global_primitive_index_A];
+          const double max_pressure_A = max_pressures[global_primitive_index_A];
+          const double min_pressure_A = min_pressures[global_primitive_index_A];
+
+          uint32_t query_stack[static_cast<uint32_t>(BVHParams::kMaxDepth)];
+          // Start at root node
+          query_stack[0] = *bvh_b.root;  // mesh local index
+          uint32_t stack_nc = 1;         // num of nodes in stack
+          uint32_t num_collisions = 0;
+
+          while (stack_nc) {
+            uint32_t node_index = query_stack[--stack_nc];
+            BVHPackedNodeHalf& node_lower = node_lowers[node_index];
+            BVHPackedNodeHalf& node_upper = node_uppers[node_index];
+
+            if (!sycl_impl::AABBsIntersect(
+                    lower_W_Ai, upper_W_Ai,
+                    Vector3<double>(node_lower.x, node_lower.y, node_lower.z),
+                    Vector3<double>(node_upper.x, node_upper.y,
+                                    node_upper.z))) {
+              continue;
+            }
+            const uint32_t left = node_lower.i;
+            const uint32_t right = node_upper.i;
+
+            if (node_lower.b) {
+              // Leaf node can have more than 1 primitive - serially check each
+              // collision
+              for (uint32_t local_primitive_index = left;
+                   local_primitive_index < right; local_primitive_index++) {
+                uint32_t unsorted_local_primitive_index =
+                    indicesAll[local_primitive_index + element_offset_B];
+                uint32_t global_primitive_index_B =
+                    unsorted_local_primitive_index + element_offset_B;
+                const Vector3<double> lower_W_i =
+                    element_aabb_min_W[global_primitive_index_B];
+                const Vector3<double> upper_W_i =
+                    element_aabb_max_W[global_primitive_index_B];
+                const double max_pressure_B =
+                    max_pressures[global_primitive_index_B];
+                const double min_pressure_B =
+                    min_pressures[global_primitive_index_B];
+                if (sycl_impl::AABBsIntersect(lower_W_Ai, upper_W_Ai, lower_W_i,
+                                              upper_W_i) &&
+                    (sycl_impl::PressuresIntersect(
+                        min_pressure_A, max_pressure_A, min_pressure_B,
+                        max_pressure_B))) {
+                  num_collisions++;
+                }
+              }
+            } else {
+              // Continue traversal
+              query_stack[stack_nc++] = left;
+              query_stack[stack_nc++] = right;
+            }
+          }
+
+          // Store the counts
+          // Storing in order of morton code
+          global_collision_counts[global_thread_id] = num_collisions;
+        });
+  });
+  return compute_collision_counts_all_event;
+}
+
 sycl::event BVHBroadPhase::ComputeCollisionPairs(
     const uint32_t mesh_a, const uint32_t mesh_b, const DeviceBVHData& bvh_data,
     const DeviceMeshData& mesh_data, DeviceMeshACollisionCounters& cc,
@@ -931,8 +1060,8 @@ sycl::event BVHBroadPhase::ComputeCollisionPairs(
             const uint32_t right = node_upper.i;
 
             if (node_lower.b) {
-              // Leaf node can have more than 1 primitive - serially check each
-              // collision
+              // Leaf node can have more than 1 primitive - serially check
+              // each collision
               for (uint32_t local_primitive_index = left;
                    local_primitive_index < right; local_primitive_index++) {
                 uint32_t unsorted_local_primitive_index =
@@ -952,10 +1081,10 @@ sycl::event BVHBroadPhase::ComputeCollisionPairs(
                     (sycl_impl::PressuresIntersect(
                         min_pressure_A, max_pressure_A, min_pressure_B,
                         max_pressure_B))) {
-                  // Where to write - this element offset + number of collisions
-                  // this node has processed What to write - global index of
-                  // element from mesh B. This can directly index into our
-                  // global arrays where data is stored
+                  // Where to write - this element offset + number of
+                  // collisions this node has processed What to write - global
+                  // index of element from mesh B. This can directly index
+                  // into our global arrays where data is stored
                   collision_indices_B[write_offset + num_collisions] =
                       global_primitive_index_B;
                   collision_indices_A[write_offset + num_collisions] =
@@ -982,8 +1111,12 @@ void BVHBroadPhase::BroadPhase(
     DeviceBVHData& bvh_data, sycl::event& element_aabb_event,
     std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                            DeviceMeshPairCollidingIndices>>&
-        collision_candidates_to_data, DeviceCollidingIndicesMemoryChunk& pair_chunk_,
-    SyclMemoryManager& memory_manager, sycl::queue& q_device) {
+        collision_candidates_to_data,
+    DeviceCollidingIndicesMemoryChunk& pair_chunk_,
+    DeviceCollisionCountersMemoryChunk& counters_chunk_,
+    DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk_,
+    DeviceMeshPairIds& mesh_pair_ids, SyclMemoryManager& memory_manager,
+    sycl::queue& q_device) {
   auto policy = oneapi::dpl::execution::make_device_policy(q_device);
   // Run a refit with the new AABBs - If the BVH is just built, then we don't
   // need to refit on the very first time step
@@ -1000,20 +1133,28 @@ void BVHBroadPhase::BroadPhase(
   // First the number of collisions for each element of mesh A is computed.
   // sycl::event event_to_depend_on =
   //     IsBVHRefitted() ? element_aabb_event : refit_event;
+  // sycl::event event_to_depend_on = refit_event;
+  // std::unordered_map<uint64_t, sycl::event> pair_events_map;
+  // for (auto& [key, value] : collision_candidates_to_data) {
+  //   auto& [cc, ci] = value;
+  //   auto [mesh_a, mesh_b] = key_to_pair(key);
+  //   pair_events_map[key] = ComputeCollisionCounts(
+  //       mesh_a, mesh_b, bvh_data, mesh_data, cc, event_to_depend_on,
+  //       q_device);
+  // }
   sycl::event event_to_depend_on = refit_event;
-  std::unordered_map<uint64_t, sycl::event> pair_events_map;
-  for (auto& [key, value] : collision_candidates_to_data) {
-    auto& [cc, ci] = value;
-    auto [mesh_a, mesh_b] = key_to_pair(key);
-    pair_events_map[key] = ComputeCollisionCounts(
-        mesh_a, mesh_b, bvh_data, mesh_data, cc, event_to_depend_on, q_device);
-  }
+  sycl::event compute_collision_counts_all_event = ComputeCollisionCountsAll(
+      mesh_pair_ids.meshAs, mesh_pair_ids.meshBs, bvh_data, mesh_data,
+      counters_chunk_, counters_offsets_chunk_, event_to_depend_on, q_device);
+  compute_collision_counts_all_event.wait();
 
   // Scan to get total collisions and offsets
-  for (auto& [key, value] : collision_candidates_to_data) {
-    auto& [cc, ci] = value;
-    auto [mesh_a, mesh_b] = key_to_pair(key);
-    pair_events_map[key].wait();
+  for (int i = 0; i < collision_candidates_to_data.size(); i++) {
+    uint32_t mesh_a = mesh_pair_ids.meshAs[i];
+    uint32_t mesh_b = mesh_pair_ids.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = collision_candidates_to_data[col_key];
+    // pair_events_map[key].wait();
     // Store the last element's collision count
     uint32_t last_element_collision_count = 0;
     q_device
@@ -1029,11 +1170,13 @@ void BVHBroadPhase::BroadPhase(
   // Wait for all the scans to complete
   q_device.wait_and_throw();
 
-  // Compute the total collisions and assign the memory required to compute the
-  // collision pairs
-  for (auto& [key, value] : collision_candidates_to_data) {
-    auto& [cc, ci] = value;
-    auto [mesh_a, mesh_b] = key_to_pair(key);
+  // Compute the total collisions and assign the memory required to compute
+  // the collision pairs
+  for (int i = 0; i < collision_candidates_to_data.size(); i++) {
+    uint32_t mesh_a = mesh_pair_ids.meshAs[i];
+    uint32_t mesh_b = mesh_pair_ids.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = collision_candidates_to_data[col_key];
     uint32_t total_collisions = 0;
     q_device
         .memcpy(&total_collisions, cc.collision_counts + cc.size_ - 1,
@@ -1045,9 +1188,11 @@ void BVHBroadPhase::BroadPhase(
   // Get pointers to the chunk of collision pair indices memory
   // that we need to write to
   uint32_t offset = 0;
-  for (auto& [key, value] : collision_candidates_to_data) {
-    auto& [cc, ci] = value;
-    auto [mesh_a, mesh_b] = key_to_pair(key);
+  for (int i = 0; i < collision_candidates_to_data.size(); i++) {
+    uint32_t mesh_a = mesh_pair_ids.meshAs[i];
+    uint32_t mesh_b = mesh_pair_ids.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = collision_candidates_to_data[col_key];
     SyclMemoryHelper::ResizeDeviceMeshPairCollidingIndicesMemory(
         memory_manager, ci, pair_chunk_, cc.total_collisions, offset);
     offset += cc.total_collisions;
@@ -1056,9 +1201,11 @@ void BVHBroadPhase::BroadPhase(
 
   // Compute the actual collision pairs
   std::vector<sycl::event> pair_events_vec;
-  for (auto& [key, value] : collision_candidates_to_data) {
-    auto& [cc, ci] = value;
-    auto [mesh_a, mesh_b] = key_to_pair(key);
+  for (int i = 0; i < collision_candidates_to_data.size(); i++) {
+    uint32_t mesh_a = mesh_pair_ids.meshAs[i];
+    uint32_t mesh_b = mesh_pair_ids.meshBs[i];
+    uint64_t col_key = key(mesh_a, mesh_b);
+    auto& [cc, ci] = collision_candidates_to_data[col_key];
     pair_events_vec.push_back(ComputeCollisionPairs(
         mesh_a, mesh_b, bvh_data, mesh_data, cc, ci, q_device));
   }

@@ -195,6 +195,23 @@ struct DeviceCollidingIndicesMemoryChunk {
   uint32_t size_ = 0;
 };
 
+struct DeviceCollisionCountersMemoryChunk {
+  uint32_t* collision_counts = nullptr;
+  uint32_t capacity_ = 0;
+  uint32_t size_ = 0;
+};
+
+struct DeviceCollisionCountersOffsetsMemoryChunk {
+  uint32_t* mesh_a_offsets = nullptr;
+  uint32_t capacity_ = 0;
+  uint32_t size_ = 0;
+};
+
+struct DeviceMeshPairIds {
+  uint32_t* meshAs = nullptr;
+  uint32_t* meshBs = nullptr;
+};
+
 class SyclMemoryHelper {
  public:
   static void AllocateMeshMemory(SyclMemoryManager& mem_mgr,
@@ -242,6 +259,10 @@ class SyclMemoryHelper {
       SyclMemoryManager& mem_mgr,
       DeviceMeshPairCollidingIndices& mesh_pair_colliding_indices,
       uint32_t new_size);
+  static void AllocateDeviceCollisionCountersOffsetsMemoryChunk(
+      SyclMemoryManager& mem_mgr,
+      DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk,
+      uint32_t num_geometries);
 
   // Store pointers to location in collision indices chunk memory to store
   // collision pair indices for the mesh pair that holds this
@@ -255,11 +276,12 @@ class SyclMemoryHelper {
   // collision_candidates_
   static void AllocateDeviceCollidingIndicesMemoryChunk(
       SyclMemoryManager& mem_mgr, DeviceCollidingIndicesMemoryChunk& pair_chunk,
+      DeviceCollisionCountersMemoryChunk& counters_chunk,
       std::unordered_map<uint64_t, std::pair<DeviceMeshACollisionCounters,
                                              DeviceMeshPairCollidingIndices>>&
           collision_candidates_to_data,
       const std::vector<std::pair<uint32_t, uint32_t>>& collision_candidates,
-      const DeviceMeshData& mesh_data);
+      const DeviceMeshData& mesh_data, DeviceMeshPairIds& mesh_pair_ids);
 
   static void FreeMeshMemory(SyclMemoryManager& mem_mgr,
                              DeviceMeshData& mesh_data);
@@ -277,10 +299,16 @@ class SyclMemoryHelper {
                                        DevicePolygonData& polygon_data);
   static void FreePolygonMemory(SyclMemoryManager& mem_mgr,
                                 DevicePolygonData& polygon_data);
-
+  static void FreeDeviceCollisionCountersOffsetsMemoryChunk(
+      SyclMemoryManager& mem_mgr,
+      DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk);
   static void FreeDeviceCollidingIndicesMemoryChunk(
       SyclMemoryManager& mem_mgr,
       DeviceCollidingIndicesMemoryChunk& pair_chunk);
+
+  static void FreeDeviceCollisionCountersMemoryChunk(
+      SyclMemoryManager& mem_mgr,
+      DeviceCollisionCountersMemoryChunk& counters_chunk);
 
  private:
   static void FreeBVHSingleMeshMemory(SyclMemoryManager& mem_mgr,

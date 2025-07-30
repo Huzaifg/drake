@@ -93,7 +93,10 @@ class BVHBroadPhase {
                                              DeviceMeshPairCollidingIndices>>&
           collision_candidates_to_data,
       DeviceCollidingIndicesMemoryChunk& pair_chunk_,
-      SyclMemoryManager& memory_manager, sycl::queue& q_device);
+      DeviceCollisionCountersMemoryChunk& counters_chunk_,
+      DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk_,
+      DeviceMeshPairIds& mesh_pair_ids, SyclMemoryManager& memory_manager,
+      sycl::queue& q_device);
   // Construct and return BVH for all meshes in the scene
   // They will be indexed by same order of sorted_geometry ids
   // q is waited on becaue memory needs to be released
@@ -122,6 +125,12 @@ class BVHBroadPhase {
                                      DeviceMeshACollisionCounters& cc,
                                      sycl::event& refit_event,
                                      sycl::queue& q_device);
+  sycl::event ComputeCollisionCountsAll(
+      const uint32_t* meshAs, const uint32_t* meshBs,
+      const DeviceBVHData& bvh_data, const DeviceMeshData& mesh_data,
+      DeviceCollisionCountersMemoryChunk& counters_chunk,
+      DeviceCollisionCountersOffsetsMemoryChunk& counters_offsets_chunk,
+      sycl::event& refit_event, sycl::queue& q_device);
   sycl::event ComputeCollisionPairs(const uint32_t mesh_a,
                                     const uint32_t mesh_b,
                                     const DeviceBVHData& bvh_data,
