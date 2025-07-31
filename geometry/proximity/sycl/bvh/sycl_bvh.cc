@@ -1288,7 +1288,7 @@ void BVHBroadPhase::BroadPhase(
   sycl::event compute_collision_counts_all_event = ComputeCollisionCountsAll(
       mesh_pair_ids.meshAs, mesh_pair_ids.meshBs, bvh_data, mesh_data,
       counters_chunk_, counters_offsets_chunk_, event_to_depend_on, q_device);
-  compute_collision_counts_all_event.wait();
+  compute_collision_counts_all_event.wait_and_throw();
 
   // for (int i = 0; i < num_mesh_collisions; i++) {
   //   uint32_t mesh_a = mesh_pair_ids.meshAs[i];

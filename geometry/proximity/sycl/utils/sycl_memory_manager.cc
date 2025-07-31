@@ -111,7 +111,7 @@ void SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
     total_size_needed_counters += mesh_data.element_counts[pair.first];
     total_size_needed_pairs +=
         std::max(1u, mesh_data.element_counts[pair.first] *
-                         mesh_data.element_counts[pair.second] / 5);
+                         mesh_data.element_counts[pair.second] / 10);
   }
   // Pairs memory
 
@@ -119,7 +119,9 @@ void SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
   // Always round up
   // Convert count to bytes, round to MB, then convert back to count
   uint32_t bytes_needed = total_size_needed_pairs * sizeof(uint32_t);
-  uint32_t mb_needed = std::max(1u, bytes_needed / (1024 * 1024));
+  uint32_t mb_needed = std::max(
+      1u, static_cast<uint32_t>(
+              std::ceil(static_cast<double>(bytes_needed) / (1024 * 1024))));
   uint32_t rounded_size_needed = (mb_needed * 1024 * 1024) / sizeof(uint32_t);
 
   // Shrink if needed size is less than 50% of current capacity. This prevents
@@ -163,7 +165,9 @@ void SyclMemoryHelper::AllocateDeviceCollidingIndicesMemoryChunk(
 
   // Counters memory
   bytes_needed = total_size_needed_counters * sizeof(uint32_t);
-  mb_needed = std::max(1u, bytes_needed / (1024 * 1024));
+  mb_needed = std::max(
+      1u, static_cast<uint32_t>(
+              std::ceil(static_cast<double>(bytes_needed) / (1024 * 1024))));
   rounded_size_needed = (mb_needed * 1024 * 1024) / sizeof(uint32_t);
 
   rounded_size_needed = std::max(rounded_size_needed, min_buffer_size);
