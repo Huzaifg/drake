@@ -250,12 +250,14 @@ class SyclProximityEngine::Impl {
 
     // We estimate 1% of the total checks remaining after broad phase
     estimated_narrow_phase_checks_ = std::max(1u, max_checks / 100);
+    current_polygon_areas_size_ = estimated_narrow_phase_checks_;
     // Used to identify which of the broad phase checks actually resulted in
     // polygons
     SyclMemoryHelper::AllocateNarrowPhaseChecksCollisionMemory(
         mem_mgr_, collision_data_, estimated_narrow_phase_checks_);
     // We estimate 1% of the narrow phase checks remaining as actual polygons
     estimated_polygons_ = std::max(1u, estimated_narrow_phase_checks_ / 100);
+    current_polygon_indices_size_ = estimated_polygons_;
 
     SyclMemoryHelper::AllocateFullPolygonMemory(mem_mgr_, polygon_data_,
                                                 estimated_narrow_phase_checks_);
