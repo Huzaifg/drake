@@ -22,7 +22,7 @@ import seaborn as sns
 import sys
 import argparse
 import numpy as np
-from utils import get_data, calculate_actual_objects, get_corrected_timing, plot_broad_phase_timing_log_log_multiple, plot_hydroelastic_query_log_log_multiple, plot_hydroelastic_query_perf_speedup, plot_broad_phase_perf_speedup, plot_narrow_phase_query_perf_speedup
+from utils import get_data, calculate_actual_objects, get_corrected_timing, plot_broad_phase_timing_log_log_multiple, plot_hydroelastic_query_log_log_multiple, plot_hydroelastic_query_perf_speedup, plot_broad_phase_perf_speedup, plot_narrow_phase_query_perf_speedup, plot_broad_phase_perf_speedup_vs_num_elements, plot_hydroelastic_query_perf_speedup_vs_num_elements
 
 
 
@@ -41,7 +41,7 @@ def main():
     base_dir = os.path.dirname(os.getcwd())
     demo_name = "objects_scaling"
     spacings = ["0.1", "0.05"]
-    num_gpp = ["1", "2", "5", "10", "20", "33"]
+    num_gpp = ["1", "2", "5", "10", "20", "33", "50", "100", "200"]
     
     folder_names = args.folders
     legend_names = args.legends
@@ -106,9 +106,21 @@ def main():
     plt.show()
     plt.close()
     
+    fig, axes = plot_hydroelastic_query_perf_speedup_vs_num_elements(gpu_data, cpu_data, folder_names, legend_names, spacings, num_gpp)
+    plt.savefig(f"{base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png", dpi=600)
+    print(f"Saved hydroelastic query perf speedup vs num elements plot to {base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png")
+    plt.show()
+    plt.close()
+    
     fig, axes = plot_broad_phase_perf_speedup(cpu_data, gpu_data, folder_names, legend_names, spacings, num_gpp)
     plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png", dpi=600)
     print(f"Saved broad phase query perf speedup plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png")
+    plt.show()
+    plt.close()
+    
+    fig, axes = plot_broad_phase_perf_speedup_vs_num_elements(cpu_data, gpu_data, folder_names, legend_names, spacings, num_gpp)
+    plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png", dpi=600)
+    print(f"Saved broad phase query perf speedup vs num elements plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png")
     plt.show()
     plt.close()
     

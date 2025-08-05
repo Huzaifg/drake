@@ -3,7 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 import sys
-from utils import plot_faces_inserted_vs_num_gpp, get_data, plot_candidate_tets_vs_num_gpp, plot_broad_narrow_misc_vs_num_gpp, plot_narrow_phase_timing_vs_num_gpp, plot_narrow_phase_timing_vs_candidate_tets
+from utils import plot_faces_inserted_vs_num_gpp, get_data, plot_candidate_tets_vs_num_gpp, plot_broad_narrow_misc_vs_num_gpp, plot_narrow_phase_timing_vs_num_gpp, plot_narrow_phase_timing_vs_candidate_tets, plot_broad_narrow_misc_vs_num_elements
 """
 Relevant data:
 - problem_size
@@ -32,14 +32,14 @@ For sycl-gpu and sycl-cpu:
 def main():
     base_dir = os.path.dirname(os.getcwd())
     demo_name = "objects_scaling"
-    spacings = ["0.1", "0.05"]
-    num_gpp = ["1", "2", "5", "10", "20", "33"]
+    spacings = ["0.1", "0.15"]
+    num_gpp = ["1", "2", "5", "10", "20", "33", "50", "100", "200", "300", "400"]
     # Make list of all run combos spacings_num_gpp
     runs = [f"{spacing}_{gpp}" for spacing in spacings for gpp in num_gpp]
     
     
     run_types = ["sycl-gpu", "drake-cpu"]
-    perf_folder = "performance_jsons_bvh_opt"
+    perf_folder = "performance_jsons_bvh_opt2"
 
     # Store all data in a nested dictionary: all_data[run_type][spacing][num_gpp][data_type]
     all_data = {run_type: {} for run_type in run_types}
@@ -62,8 +62,6 @@ def main():
                     json_path_kernel_timing = f"{base_dir}/{perf_folder}/{demo_name}_{spacing}_{gpp}_{run_type}_timing.json"
                     data_kernel_timing = get_data(json_path_kernel_timing)
                     all_data[run_type][spacing][gpp]["kernel_timing"] = data_kernel_timing
-    
-    
     
     
     # Analyze distribution of candidate tets and faces inserted for the dense vs sparse object placements
@@ -114,7 +112,11 @@ def main():
     plt.show()
     plt.close()
     
-    
+    plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gpp)
+    plt.savefig(f"{base_dir}/{plot_dir}/object_scaling_timing_overall_vs_num_elements.png",dpi=600)
+    print("Saved plot to ", f"{base_dir}/{plot_dir}/object_scaling_timing_overall_vs_num_elements.png")
+    plt.show()
+    plt.close()
     
     # Narrow phase vs num_gpp
     plot_narrow_phase_timing_vs_num_gpp(all_data, run_types, spacings, num_gpp)
