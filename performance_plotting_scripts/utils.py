@@ -335,12 +335,17 @@ def plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, sphere_res
     sns.set_style("ticks")
     sns.set_palette("colorblind")
     
-    # Create subplots if ax is not provided
+    # Create subplots dynamically based on number of sphere resolutions
+    n_cols = len(sphere_resolutions)
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5), sharey=True)
     else:
         # If ax is provided, we assume it's a single axis, so we can't create subplots
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5), sharey=True)
+    
+    # Handle single column case
+    if n_cols == 1:
+        axes = np.array([axes])
     
     # Prepare data for each spacing
     for i, sr in enumerate(sphere_resolutions):
@@ -372,15 +377,7 @@ def plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, sphere_res
         current_ax.set_xticks([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
         current_ax.set_xlabel("Total geometries", fontsize=14)
         current_ax.set_ylabel("Faces Inserted - Narrow Phase" if i == 0 else "", fontsize=14)
-        title = ""
-        if(sr == "0.0050"):
-            title = "0.0050"
-        elif(sr == "0.0100"):
-            title = "0.0100"
-        elif(sr == "0.0200"):
-            title = "0.0200"
-        elif(sr == "0.0400"):
-            title = "0.0400"
+        title = f"Sphere Resolution - {sphere_resolutions[i]}"
         current_ax.set_title(title, fontsize=15, fontweight='bold')
         
         # Only show legend on the first subplot
@@ -486,12 +483,17 @@ def plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, sphere_res
     sns.set_style("ticks")
     sns.set_palette("colorblind")
     
-    # Create subplots if ax is not provided
+    # Create subplots dynamically based on number of sphere resolutions
+    n_cols = len(sphere_resolutions)
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5), sharey=True)
     else:
         # If ax is provided, we assume it's a single axis, so we can't create subplots
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(6 * n_cols, 5), sharey=True)
+    
+    # Handle single column case
+    if n_cols == 1:
+        axes = np.array([axes])
     
     # Prepare data for each spacing
     for i, sr in enumerate(sphere_resolutions):
@@ -523,15 +525,7 @@ def plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, sphere_res
         current_ax.set_xticks([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
         current_ax.set_xlabel("Total geometries", fontsize=14)
         current_ax.set_ylabel("Candidates - Broad Phase" if i == 0 else "", fontsize=14)
-        title = ""
-        if(sr == "0.0050"):
-            title = "0.0050"
-        elif(sr == "0.0100"):
-            title = "0.0100"
-        elif(sr == "0.0200"):
-            title = "0.0200"
-        elif(sr == "0.0400"):
-            title = "0.0400"
+        title = f"Sphere Resolution - {sphere_resolutions[i]}"
         current_ax.set_title(title, fontsize=15, fontweight='bold')
         
         # Only show legend on the first subplot
@@ -576,8 +570,8 @@ def plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax
     }
     
     # Plot for each spacing
-    for spacing_idx, spacing in enumerate(spacings):
-        current_ax = axes[spacing_idx]
+    for col_idx, spacing in enumerate(spacings):
+        current_ax = axes[col_idx]
         
         bar_width = 0.35
         x = list(range(len(num_gpp)))
@@ -616,23 +610,23 @@ def plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax
             
             # Create stacked bars
             b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
-                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'BroadPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
-                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'NarrowPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
             b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
-                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'Misc' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
         
         # Customize the subplot
         current_ax.set_xticks(x)
         current_ax.set_xticklabels(num_gpp)
         current_ax.set_xlabel("Number of Objects per Group", fontsize=14)
-        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
+        current_ax.set_ylabel("Time (us)" if col_idx == 0 else "", fontsize=14)
         # title = "Sparse" if spacing == "0.1" else "Dense"
         title = ""
         if(spacing == "0.1"):
@@ -644,12 +638,12 @@ def plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax
         current_ax.set_title(title, fontsize=15, fontweight='bold')
         
         # Add subtitle indicating bar grouping only on first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
                            transform=current_ax.transAxes, ha='center', fontsize=12)
         
         # Only show legend on the first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             handles, labels = current_ax.get_legend_handles_labels()
             seen = set()
             new_handles, new_labels = [], []
@@ -670,7 +664,7 @@ def plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_
     """
     Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
     The full bar is HydroelasticQueryTime, with segments for BroadPhase, NarrowPhase, and Misc.
-    Uses two subplots for different spacings.
+    Uses subplots for different sphere resolutions.
     Args:
         all_data: Nested dict as in object_scaling.py
         run_types: List of run types (should include 'sycl-gpu' and 'drake-cpu')
@@ -682,12 +676,17 @@ def plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_
     sns.set_style("ticks")
     sns.set_palette("colorblind")
     
-    # Create subplots if ax is not provided
+    # Create subplots dynamically based on number of sphere resolutions
+    n_cols = len(sphere_resolutions)
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 6), sharey=True)
     else:
         # If ax is provided, we assume it's a single axis, so we can't create subplots
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 6), sharey=True)
+    
+    # Handle single column case
+    if n_cols == 1:
+        axes = np.array([axes])
     
     # Define colors for different timing components
     colors = {
@@ -697,8 +696,8 @@ def plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_
     }
     
     # Plot for each spacing
-    for spacing_idx, sr in enumerate(sphere_resolutions):
-        current_ax = axes[spacing_idx]
+    for col_idx, sr in enumerate(sphere_resolutions):
+        current_ax = axes[col_idx]
         
         bar_width = 0.35
         x = list(range(len(objects_per_pile)))
@@ -737,41 +736,33 @@ def plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_
             
             # Create stacked bars
             b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
-                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'BroadPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
-                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'NarrowPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
             b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
-                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'Misc' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
         
         # Customize the subplot
         current_ax.set_xticks(x)
         current_ax.set_xticklabels([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
         current_ax.set_xlabel("Total geometries", fontsize=14)
-        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
-        title = ""
-        if(sr == "0.0050"):
-            title = "0.0050"
-        elif(sr == "0.0100"):
-            title = "0.0100"
-        elif(sr == "0.0200"):
-            title = "0.0200"
-        elif(sr == "0.0400"):
-            title = "0.0400"
+        current_ax.set_ylabel("Time (us)" if col_idx == 0 else "", fontsize=14)
+        title = f"Sphere Resolution - {sphere_resolutions[i]}"
         current_ax.set_title(title, fontsize=15, fontweight='bold')
         
         # Add subtitle indicating bar grouping only on first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
                            transform=current_ax.transAxes, ha='center', fontsize=12, fontweight='bold')
         
         # Only show legend on the first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             handles, labels = current_ax.get_legend_handles_labels()
             seen = set()
             new_handles, new_labels = [], []
@@ -820,8 +811,8 @@ def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gp
     num_elements = [calculate_number_of_elements_objects_scaling(gpp, all_data[run_types[0]][spacings[0]][gpp]["problem_size"]) for gpp in num_gpp]
     
     # Plot for each spacing
-    for spacing_idx, spacing in enumerate(spacings):
-        current_ax = axes[spacing_idx]
+    for col_idx, spacing in enumerate(spacings):
+        current_ax = axes[col_idx]
         
         bar_width = 0.35
         x = list(range(len(num_elements)))
@@ -860,16 +851,16 @@ def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gp
             
             # Create stacked bars
             b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
-                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'BroadPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
-                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'NarrowPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
             b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
-                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'Misc' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
         
         # Customize the subplot
@@ -887,7 +878,7 @@ def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gp
         formatted_labels = [format_num_elements(num) for num in num_elements]
         current_ax.set_xticklabels(formatted_labels, rotation=45, ha='right')
         current_ax.set_xlabel("Number of Elements", fontsize=14)
-        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
+        current_ax.set_ylabel("Time (us)" if col_idx == 0 else "", fontsize=14)
         # title = "Sparse" if spacing == "0.1" else "Dense"
         title = ""
         if(spacing == "0.1"):
@@ -899,12 +890,12 @@ def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gp
         current_ax.set_title(title, fontsize=15, fontweight='bold')
         
         # Add subtitle indicating bar grouping only on first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
                            transform=current_ax.transAxes, ha='center', fontsize=12)
         
         # Only show legend on the first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             handles, labels = current_ax.get_legend_handles_labels()
             seen = set()
             new_handles, new_labels = [], []
@@ -925,7 +916,7 @@ def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_
     """
     Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
     The full bar is HydroelasticQueryTime, with segments for BroadPhase, NarrowPhase, and Misc.
-    Uses two subplots for different spacings.
+    Uses subplots for different sphere resolutions.
     Args:
         all_data: Nested dict as in object_scaling.py
         run_types: List of run types (should include 'sycl-gpu' and 'drake-cpu')
@@ -937,12 +928,17 @@ def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_
     sns.set_style("ticks")
     sns.set_palette("colorblind")
     
-    # Create subplots if ax is not provided
+    # Create subplots dynamically based on number of sphere resolutions
+    n_cols = len(sphere_resolutions)
     if ax is None:
-        fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(8 * n_cols, 7), sharey=True)
     else:
         # If ax is provided, we assume it's a single axis, so we can't create subplots
-        fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+        fig, axes = plt.subplots(1, n_cols, figsize=(8 * n_cols, 7), sharey=True)
+    
+    # Handle single column case
+    if n_cols == 1:
+        axes = np.array([axes])
     
     # Define colors for different timing components
     colors = {
@@ -953,10 +949,10 @@ def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_
     
 
     
-    # Plot for each spacing
-    for spacing_idx, sr in enumerate(sphere_resolutions):
+    # Plot for each sphere resolution
+    for col_idx, sr in enumerate(sphere_resolutions):
         num_elements = [calculate_number_of_elements_clutter(obp, sr, all_data[run_types[0]][obp][sr]["problem_size"]) for obp in objects_per_pile]
-        current_ax = axes[spacing_idx]
+        current_ax = axes[col_idx]
         
         bar_width = 0.35
         x = list(range(len(num_elements)))
@@ -995,16 +991,16 @@ def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_
             
             # Create stacked bars
             b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
-                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'BroadPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
-                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'NarrowPhase' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
             
             bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
             b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
-                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               label=f'Misc' if col_idx == 0 and run_type == 'sycl-gpu' else None, 
                                hatch='//' if run_type == 'sycl-gpu' else None)
         
         # Customize the subplot
@@ -1022,25 +1018,17 @@ def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_
         formatted_labels = [format_num_elements(num) for num in num_elements]
         current_ax.set_xticklabels(formatted_labels, rotation=45, ha='right')
         current_ax.set_xlabel("Number of Elements", fontsize=14)
-        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
-        title = ""
-        if(sr == "0.0050"):
-            title = "0.0050"
-        elif(sr == "0.0100"):
-            title = "0.0100"
-        elif(sr == "0.0200"):
-            title = "0.0200"
-        elif(sr == "0.0400"):
-            title = "0.0400"
-        current_ax.set_title(title, fontsize=15, fontweight='bold')
+        current_ax.set_ylabel("Time (us)" if col_idx == 0 else "", fontsize=14)
+        # Set title based on sphere resolution
+        current_ax.set_title(f"Sphere Resolution- {sr}", fontsize=15, fontweight='bold')
         
         # Add subtitle indicating bar grouping only on first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
                            transform=current_ax.transAxes, ha='center', fontsize=12)
         
         # Only show legend on the first subplot
-        if spacing_idx == 0:
+        if col_idx == 0:
             handles, labels = current_ax.get_legend_handles_labels()
             seen = set()
             new_handles, new_labels = [], []
@@ -1549,7 +1537,7 @@ def plot_narrow_phase_query_perf_speedup(cpu_data, gpu_data,
         • Row 1 – CPU / GPU speed‑up.
 
     CPU and GPU rows are matched on (Spacing, gpp) so the speed‑up
-    column never turns into NaNs even when the “candidate‑tets”
+    column never turns into NaNs even when the "candidate‑tets"
     averages differ slightly.
     """
     # 0 ▸ visual defaults --------------------------------------------------
@@ -1713,7 +1701,7 @@ def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
         • Row 1 – CPU / GPU speed‑up.
 
     CPU and GPU rows are matched on (Spacing, gpp) so the speed‑up
-    column never turns into NaNs even when the “candidate‑tets”
+    column never turns into NaNs even when the "candidate‑tets"
     averages differ slightly.
     """
     # 0 ▸ visual defaults --------------------------------------------------
@@ -1782,7 +1770,7 @@ def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
                 .replace([np.inf, -np.inf], np.nan)
                 .dropna(subset=["SpeedUp"]))
 
-    # 3 ▸ global y‑limits --------------------------------------------------
+    # 3 ▸ global limits --------------------------------------------------
     y_raw_min = df_raw["NPTime_us"].min() * 0.8
     y_raw_max = df_raw["NPTime_us"].max() * 1.25
     if df_spd.empty:                               # fall‑back baseline
@@ -1790,6 +1778,10 @@ def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
     else:
         y_spd_min = df_spd["SpeedUp"].min() * 0.8
         y_spd_max = df_spd["SpeedUp"].max() * 1.25
+    
+    # Global x-axis limits for consistent ranges across all plots
+    x_min = df_raw["TetsProcess"].min() * 0.8
+    x_max = df_raw["TetsProcess"].max() * 1.25
 
     # 4 ▸ figure grid ------------------------------------------------------
     n_cols = len(sphere_resolutions)
@@ -1819,6 +1811,7 @@ def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
                       label=legend, zorder=3)
 
         ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_xlim(x_min, x_max)
         ax.set_title(spacing_titles.get(sr, sr),
                      fontsize=13, weight="bold")
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
@@ -1851,6 +1844,7 @@ def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
 
         ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
         ax.set_ylim(y_spd_min, y_spd_max)
+        ax.set_xlim(x_min, x_max)
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
         ax.set_xlabel("Tets to process $n$", fontsize=12)
         if c == 0:
@@ -2352,11 +2346,15 @@ def plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data,
     if n_cols == 1:
         axes = np.array(axes).reshape(2, 1)
 
-    # common y‑limits
+    # common limits
     y_raw_min, y_raw_max = df_raw["BPTime_us"].min(), df_raw["BPTime_us"].max()
     y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
     y_raw_min *= 0.8;  y_raw_max *= 1.25
     y_spd_min *= 0.8;  y_spd_max *= 1.25
+    
+    # Global x-axis limits for consistent ranges across all plots
+    x_min = df_raw["Bodies"].min() * 0.8
+    x_max = df_raw["Bodies"].max() * 1.25
 
     spacing_titles = {}
     for sr in sphere_resolutions:
@@ -2378,6 +2376,7 @@ def plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data,
                       label=legend, zorder=3)
 
         ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_xlim(x_min, x_max)
         ax.set_title(spacing_titles.get(sr, sr),
                      fontsize=13, weight="bold")
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
@@ -2409,6 +2408,7 @@ def plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data,
 
         ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
         ax.set_ylim(y_spd_min, y_spd_max)
+        ax.set_xlim(x_min, x_max)
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
         ax.set_xlabel("Number of Elements $n$", fontsize=12)
         if c == 0:
@@ -2853,6 +2853,9 @@ def plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(
     y_raw_max *= 1.25
     y_spd_min *= 0.8
     y_spd_max *= 1.25
+    
+    x_min = df_raw["Bodies"].min() * 0.8
+    x_max = df_raw["Bodies"].max() * 1.25
 
     sphere_resolution_titles = {}
     for sr in sphere_resolutions:
@@ -2872,6 +2875,7 @@ def plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(
                       ms=5, lw=1.8, color=color, label=legend, zorder=3)
 
         ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_xlim(x_min, x_max)
         ax.set_title(sphere_resolution_titles.get(sr, sr), fontsize=13, weight="bold")
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
         if c == 0:
@@ -2901,6 +2905,7 @@ def plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(
 
         ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
         ax.set_ylim(y_spd_min, y_spd_max)
+        ax.set_xlim(x_min, x_max)
         ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
         ax.set_xlabel("Number of Elements $n$", fontsize=12)
         if c == 0:

@@ -66,7 +66,7 @@ def main():
                     data_kernel_timing = get_data(json_path_kernel_timing)
                     all_data[run_type][obp][sr]["kernel_timing"] = data_kernel_timing
                    
-    plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, ["0.0050", "0.0200"])
+    plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
     plot_dir = "plots_clutter"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
@@ -75,7 +75,7 @@ def main():
     plt.show()
     plt.close()
     
-    plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, ["0.0050", "0.0200"])
+    plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
     plot_dir = "plots_clutter"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
@@ -84,7 +84,7 @@ def main():
     plt.show()
     plt.close()
     
-    plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, ["0.0050", "0.0200"])
+    plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
     plot_dir = "plots_clutter"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
@@ -93,7 +93,7 @@ def main():
     plt.show()
     plt.close()
     
-    plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_per_pile, ["0.0050", "0.0200"])
+    plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_per_pile, sphere_resolutions)
     plot_dir = "plots_clutter"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
