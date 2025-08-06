@@ -39,6 +39,14 @@ def calculate_actual_objects(gpp):
     """
     return 3 * int(gpp) + 1
 
+def calculate_actual_objects_clutter(obp):
+    """
+    Calculate the actual number of objects based on OBP (objects per pile).
+    Each pile has 1 table, and each pile has obp objects.
+    Formula: 1 + obp
+    """
+    return int(obp) * 4
+
 def calculate_number_of_elements_objects_scaling(gpp, problem_size_data):
     num_floors = 1
     num_peppers = int(gpp)
@@ -69,6 +77,20 @@ def calculate_number_of_elements_objects_scaling(gpp, problem_size_data):
     
     gripper_elements = left_gripper_elements + right_gripper_elements
     return floor_elements + pepper_elements + gripper_elements
+
+
+def calculate_number_of_elements_clutter(obp, sr, problem_size_data):
+    # Get hydroelastic_bodies array
+    hydroelastic_bodies = problem_size_data.get("hydroelastic_bodies", [])
+    total_tets = 0
+    for body_data in hydroelastic_bodies:
+        body_name = body_data.get("body", "")
+        tetrahedra = int(body_data.get("tetrahedra", 0))
+        total_tets += tetrahedra
+        
+    return total_tets
+
+    
 
 def _slope_indicator(ax, x0, y0, exponent, label,
                      length_dec=0.6,             # ← shorter than before
@@ -297,6 +319,81 @@ def plot_faces_inserted_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax=No
     plt.tight_layout()
     return axes
 
+def plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions, ax=None):
+    """
+    Plots FacesInserted vs NumGpp for given run_types using seaborn.
+    Args:
+        all_data: Nested dict as in spatula.py
+        run_types: List of run types (e.g., ["sycl-gpu", "drake-cpu"])
+        objects_per_pile: List of objects per pile  (e.g., ["1", "2", "5", "10", "20"])
+        sphere_resolutions: List of sphere resolutions (e.g., ["0.0050", "0.0100", "0.0200", "0.0400"])
+        ax: Optional matplotlib axis to plot on
+    """
+    import pandas as pd
+    
+    # Set style
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    
+    # Create subplots if ax is not provided
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    else:
+        # If ax is provided, we assume it's a single axis, so we can't create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    
+    # Prepare data for each spacing
+    for i, sr in enumerate(sphere_resolutions):
+        plot_data = []
+        for run_type in run_types:
+            for obp in objects_per_pile:
+                # Get the faces inserted data
+                problem_sizes = all_data[run_type][obp][sr]["problem_size"].get("problem_sizes", {})
+                if run_type.startswith("sycl"):
+                    faces = problem_sizes.get("SYCFacesInserted", {}).get("avg", None)
+                else:
+                    faces = problem_sizes.get("FacesInserted", {}).get("avg", None)
+                
+                plot_data.append({
+                    "ObjectsPerPile": calculate_actual_objects_clutter(obp),
+                    "FacesInserted": faces,
+                    "RunType": run_type
+                })
+        
+        # Create DataFrame and plot
+        df = pd.DataFrame(plot_data)
+        
+        # Plot on the current subplot
+        current_ax = axes[i]
+        sns.lineplot(data=df, x="ObjectsPerPile", y="FacesInserted", hue="RunType", 
+                    marker="o", ax=current_ax)
+        
+        # Customize the subplot
+        current_ax.set_xticks([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
+        current_ax.set_xlabel("Total geometries", fontsize=14)
+        current_ax.set_ylabel("Faces Inserted - Narrow Phase" if i == 0 else "", fontsize=14)
+        title = ""
+        if(sr == "0.0050"):
+            title = "0.0050"
+        elif(sr == "0.0100"):
+            title = "0.0100"
+        elif(sr == "0.0200"):
+            title = "0.0200"
+        elif(sr == "0.0400"):
+            title = "0.0400"
+        current_ax.set_title(title, fontsize=15, fontweight='bold')
+        
+        # Only show legend on the first subplot
+        if i == 0:
+            current_ax.legend(fontsize=12, title_fontsize=13)
+        else:
+            current_ax.get_legend().remove() if current_ax.get_legend() else None
+            
+        current_ax.tick_params(axis='both', which='major', labelsize=12)
+        current_ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return axes
 def plot_candidate_tets_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax=None):
     """
     Plots CandidateTets vs NumGpp for given run_types using seaborn.
@@ -372,6 +469,82 @@ def plot_candidate_tets_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax=No
     plt.tight_layout()
     return axes
 
+
+def plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions, ax=None):
+    """
+    Plots CandidateTets vs NumGpp for given run_types using seaborn.
+    Args:
+        all_data: Nested dict as in spatula.py
+        run_types: List of run types (e.g., ["sycl-gpu", "drake-cpu"])
+        objects_per_pile: List of objects per pile  (e.g., ["1", "2", "5", "10", "20"])
+        sphere_resolutions: List of sphere resolutions (e.g., ["0.0050", "0.0100", "0.0200", "0.0400"])
+        ax: Optional matplotlib axis to plot on
+    """
+    import pandas as pd
+    
+    # Set style
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    
+    # Create subplots if ax is not provided
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    else:
+        # If ax is provided, we assume it's a single axis, so we can't create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    
+    # Prepare data for each spacing
+    for i, sr in enumerate(sphere_resolutions):
+        plot_data = []
+        for run_type in run_types:
+            for obp in objects_per_pile:
+                # Get the candidate tets data
+                problem_sizes = all_data[run_type][obp][sr]["problem_size"].get("problem_sizes", {})
+                if run_type.startswith("sycl"):
+                    tets = problem_sizes.get("SYCLCandidateTets", {}).get("avg", None)
+                else:
+                    tets = problem_sizes.get("CandidateTets", {}).get("avg", None)
+                
+                plot_data.append({
+                    "ObjectsPerPile": calculate_actual_objects_clutter(obp),
+                    "CandidateTets": tets,
+                    "RunType": run_type
+                })
+        
+        # Create DataFrame and plot
+        df = pd.DataFrame(plot_data)
+        
+        # Plot on the current subplot
+        current_ax = axes[i]
+        sns.lineplot(data=df, x="ObjectsPerPile", y="CandidateTets", hue="RunType", 
+                    marker="o", ax=current_ax)
+        
+        # Customize the subplot
+        current_ax.set_xticks([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
+        current_ax.set_xlabel("Total geometries", fontsize=14)
+        current_ax.set_ylabel("Candidates - Broad Phase" if i == 0 else "", fontsize=14)
+        title = ""
+        if(sr == "0.0050"):
+            title = "0.0050"
+        elif(sr == "0.0100"):
+            title = "0.0100"
+        elif(sr == "0.0200"):
+            title = "0.0200"
+        elif(sr == "0.0400"):
+            title = "0.0400"
+        current_ax.set_title(title, fontsize=15, fontweight='bold')
+        
+        # Only show legend on the first subplot
+        if i == 0:
+            current_ax.legend(fontsize=12, title_fontsize=13)
+        else:
+            current_ax.get_legend().remove() if current_ax.get_legend() else None
+            
+        current_ax.tick_params(axis='both', which='major', labelsize=12)
+        current_ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return axes
 def plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax=None):
     """
     Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
@@ -493,7 +666,127 @@ def plot_broad_narrow_misc_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax
     plt.tight_layout()
     return axes
 
-
+def plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions, ax=None):
+    """
+    Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
+    The full bar is HydroelasticQueryTime, with segments for BroadPhase, NarrowPhase, and Misc.
+    Uses two subplots for different spacings.
+    Args:
+        all_data: Nested dict as in object_scaling.py
+        run_types: List of run types (should include 'sycl-gpu' and 'drake-cpu')
+        objects_per_pile: List of objects per pile  (e.g., ["1", "2", "5", "10", "20"])
+        sphere_resolutions: List of sphere resolutions (e.g., ["0.0050", "0.0100", "0.0200", "0.0400"])
+        ax: Optional matplotlib axis to plot on
+    """
+    # Set style
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    
+    # Create subplots if ax is not provided
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    else:
+        # If ax is provided, we assume it's a single axis, so we can't create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    
+    # Define colors for different timing components
+    colors = {
+        'BroadPhase': '#1f77b4',
+        'NarrowPhase': '#ff7f0e',
+        'Misc': '#2ca02c',
+    }
+    
+    # Plot for each spacing
+    for spacing_idx, sr in enumerate(sphere_resolutions):
+        current_ax = axes[spacing_idx]
+        
+        bar_width = 0.35
+        x = list(range(len(objects_per_pile)))
+        run_type_offsets = {'sycl-gpu': -bar_width/2, 'drake-cpu': bar_width/2}
+        
+        for i, run_type in enumerate(['sycl-gpu', 'drake-cpu']):
+            if run_type not in run_types:
+                continue
+                
+            broad_vals, narrow_vals, misc_vals, total_vals = [], [], [], []
+            
+            for obp in objects_per_pile:
+                timings = all_data[run_type][obp][sr]["timing_overall"].get("timings", {})
+                hq_data = timings.get("HydroelasticQuery", {})
+                hq = get_corrected_timing(hq_data, run_type)
+                
+                if run_type == 'sycl-gpu':
+                    kernel_timing = all_data[run_type][obp][sr]["kernel_timing"].get("kernel_timings", {})
+                    broad_data = kernel_timing.get("transform_and_broad_phase", {})
+                    narrow_data = kernel_timing.get("compute_contact_polygons", {})
+                    broad = get_corrected_timing(broad_data, run_type)
+                    narrow = get_corrected_timing(narrow_data, run_type)
+                else:
+                    broad_data = timings.get("BroadPhase", {})
+                    narrow_data = timings.get("NarrowPhase", {})
+                    broad = get_corrected_timing(broad_data, run_type)
+                    narrow = get_corrected_timing(narrow_data, run_type)
+                
+                misc = max(hq - broad - narrow, 0)
+                broad_vals.append(broad)
+                narrow_vals.append(narrow)
+                misc_vals.append(misc)
+                total_vals.append(hq)
+            # Plot stacked bars for this run_type
+            xpos = [xi + run_type_offsets[run_type] for xi in x]
+            
+            # Create stacked bars
+            b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
+                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+            
+            b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
+                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+            
+            bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
+            b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
+                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+        
+        # Customize the subplot
+        current_ax.set_xticks(x)
+        current_ax.set_xticklabels([calculate_actual_objects_clutter(obp) for obp in objects_per_pile])
+        current_ax.set_xlabel("Total geometries", fontsize=14)
+        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
+        title = ""
+        if(sr == "0.0050"):
+            title = "0.0050"
+        elif(sr == "0.0100"):
+            title = "0.0100"
+        elif(sr == "0.0200"):
+            title = "0.0200"
+        elif(sr == "0.0400"):
+            title = "0.0400"
+        current_ax.set_title(title, fontsize=15, fontweight='bold')
+        
+        # Add subtitle indicating bar grouping only on first subplot
+        if spacing_idx == 0:
+            current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
+                           transform=current_ax.transAxes, ha='center', fontsize=12, fontweight='bold')
+        
+        # Only show legend on the first subplot
+        if spacing_idx == 0:
+            handles, labels = current_ax.get_legend_handles_labels()
+            seen = set()
+            new_handles, new_labels = [], []
+            for h, l in zip(handles, labels):
+                if l not in seen and l:
+                    new_handles.append(h)
+                    new_labels.append(l)
+                    seen.add(l)
+            current_ax.legend(new_handles, new_labels, fontsize=12, title_fontsize=13)
+        
+        current_ax.tick_params(axis='both', which='major', labelsize=12)
+        current_ax.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    return axes
 def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gpp, ax=None):
     """
     Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
@@ -628,7 +921,142 @@ def plot_broad_narrow_misc_vs_num_elements(all_data, run_types, spacings, num_gp
     # Adjust layout to prevent label cutoff
     plt.tight_layout(pad=2.0)
     return axes
+def plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_per_pile, sphere_resolutions, ax=None):
+    """
+    Plots a grouped stacked bar plot comparing BroadPhase, NarrowPhase, and Misc times for sycl-gpu and drake-cpu.
+    The full bar is HydroelasticQueryTime, with segments for BroadPhase, NarrowPhase, and Misc.
+    Uses two subplots for different spacings.
+    Args:
+        all_data: Nested dict as in object_scaling.py
+        run_types: List of run types (should include 'sycl-gpu' and 'drake-cpu')
+        objects_per_pile: List of objects per pile  (e.g., ["1", "2", "5", "10", "20"])
+        sphere_resolutions: List of sphere resolutions (e.g., ["0.0050", "0.0100", "0.0200", "0.0400"])
+        ax: Optional matplotlib axis to plot on
+    """
+    # Set style
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    
+    # Create subplots if ax is not provided
+    if ax is None:
+        fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+    else:
+        # If ax is provided, we assume it's a single axis, so we can't create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+    
+    # Define colors for different timing components
+    colors = {
+        'BroadPhase': '#1f77b4',
+        'NarrowPhase': '#ff7f0e',
+        'Misc': '#2ca02c',
+    }
+    
 
+    
+    # Plot for each spacing
+    for spacing_idx, sr in enumerate(sphere_resolutions):
+        num_elements = [calculate_number_of_elements_clutter(obp, sr, all_data[run_types[0]][obp][sr]["problem_size"]) for obp in objects_per_pile]
+        current_ax = axes[spacing_idx]
+        
+        bar_width = 0.35
+        x = list(range(len(num_elements)))
+        run_type_offsets = {'sycl-gpu': -bar_width/2, 'drake-cpu': bar_width/2}
+        
+        for i, run_type in enumerate(['sycl-gpu', 'drake-cpu']):
+            if run_type not in run_types:
+                continue
+                
+            broad_vals, narrow_vals, misc_vals, total_vals = [], [], [], []
+            
+            for obp in objects_per_pile:
+                timings = all_data[run_type][obp][sr]["timing_overall"].get("timings", {})
+                hq_data = timings.get("HydroelasticQuery", {})
+                hq = get_corrected_timing(hq_data, run_type)
+                
+                if run_type == 'sycl-gpu':
+                    kernel_timing = all_data[run_type][obp][sr]["kernel_timing"].get("kernel_timings", {})
+                    broad_data = kernel_timing.get("transform_and_broad_phase", {})
+                    narrow_data = kernel_timing.get("compute_contact_polygons", {})
+                    broad = get_corrected_timing(broad_data, run_type)
+                    narrow = get_corrected_timing(narrow_data, run_type)
+                else:
+                    broad_data = timings.get("BroadPhase", {})
+                    narrow_data = timings.get("NarrowPhase", {})
+                    broad = get_corrected_timing(broad_data, run_type)
+                    narrow = get_corrected_timing(narrow_data, run_type)
+                
+                misc = max(hq - broad - narrow, 0)
+                broad_vals.append(broad)
+                narrow_vals.append(narrow)
+                misc_vals.append(misc)
+                total_vals.append(hq)
+            # Plot stacked bars for this run_type
+            xpos = [xi + run_type_offsets[run_type] for xi in x]
+            
+            # Create stacked bars
+            b1 = current_ax.bar(xpos, broad_vals, bar_width, color=colors['BroadPhase'], 
+                               label=f'BroadPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+            
+            b2 = current_ax.bar(xpos, narrow_vals, bar_width, bottom=broad_vals, color=colors['NarrowPhase'], 
+                               label=f'NarrowPhase' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+            
+            bottoms = [b + n for b, n in zip(broad_vals, narrow_vals)]
+            b3 = current_ax.bar(xpos, misc_vals, bar_width, bottom=bottoms, color=colors['Misc'], 
+                               label=f'Misc' if spacing_idx == 0 and run_type == 'sycl-gpu' else None, 
+                               hatch='//' if run_type == 'sycl-gpu' else None)
+        
+        # Customize the subplot
+        current_ax.set_xticks(x)
+        
+        # Format x-axis labels to be more readable
+        def format_num_elements(num):
+            if num >= 1000000:
+                return f"{num/1000000:.1f}M"
+            elif num >= 1000:
+                return f"{num/1000:.0f}K"
+            else:
+                return str(num)
+        
+        formatted_labels = [format_num_elements(num) for num in num_elements]
+        current_ax.set_xticklabels(formatted_labels, rotation=45, ha='right')
+        current_ax.set_xlabel("Number of Elements", fontsize=14)
+        current_ax.set_ylabel("Time (us)" if spacing_idx == 0 else "", fontsize=14)
+        title = ""
+        if(sr == "0.0050"):
+            title = "0.0050"
+        elif(sr == "0.0100"):
+            title = "0.0100"
+        elif(sr == "0.0200"):
+            title = "0.0200"
+        elif(sr == "0.0400"):
+            title = "0.0400"
+        current_ax.set_title(title, fontsize=15, fontweight='bold')
+        
+        # Add subtitle indicating bar grouping only on first subplot
+        if spacing_idx == 0:
+            current_ax.text(0.5, -0.15, "(left: sycl-gpu, right: drake-cpu)", 
+                           transform=current_ax.transAxes, ha='center', fontsize=12)
+        
+        # Only show legend on the first subplot
+        if spacing_idx == 0:
+            handles, labels = current_ax.get_legend_handles_labels()
+            seen = set()
+            new_handles, new_labels = [], []
+            for h, l in zip(handles, labels):
+                if l not in seen and l:
+                    new_handles.append(h)
+                    new_labels.append(l)
+                    seen.add(l)
+            current_ax.legend(new_handles, new_labels, fontsize=12, title_fontsize=13)
+        
+        current_ax.tick_params(axis='both', which='major', labelsize=12)
+        current_ax.grid(True, alpha=0.3, axis='y')
+    
+    # Adjust layout to prevent label cutoff
+    plt.tight_layout(pad=2.0)
+    return axes
 def plot_narrow_phase_timing_vs_num_gpp(all_data, run_types, spacings, num_gpp, ax=None):
     """
     Plots NarrowPhase timing vs NumGpp for given run_types using seaborn line plots.
@@ -1275,6 +1703,162 @@ def plot_narrow_phase_query_perf_speedup(cpu_data, gpu_data,
 
     return fig, axes
 
+
+def plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data,
+                                         folder_names, legend_names,
+                                         objects_per_pile, sphere_resolutions):
+    """
+    Two‑row figure:
+        • Row 0 – raw Narrow‑phase timings   (CPU + GPUs).
+        • Row 1 – CPU / GPU speed‑up.
+
+    CPU and GPU rows are matched on (Spacing, gpp) so the speed‑up
+    column never turns into NaNs even when the “candidate‑tets”
+    averages differ slightly.
+    """
+    # 0 ▸ visual defaults --------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers = ["o", "s", "D", "^", "v"]
+    lstyles = ["-", "--", "-.", ":"]
+
+    # 1 ▸ gather raw timings ----------------------------------------------
+    rows_raw = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for obp in objects_per_pile:
+            for sr in sphere_resolutions:
+                if legend == cpu_label:                         # CPU
+                    nph_dict = (store[folder_names[f_idx]][obp][sr]
+                                ["timing_overall"].get("timings", {})
+                                .get("NarrowPhase", {}))
+                    nph_time = get_corrected_timing(nph_dict, "drake-cpu")
+                    prob_sz  = (store[folder_names[f_idx]][obp][sr]
+                                ["problem_size"].get("problem_sizes", {})
+                                .get("CandidateTets", {}).get("avg", None))
+                else:                                           # GPU
+                    nph_dict = (store[folder_names[f_idx]][obp][sr]
+                                ["kernel_timing"]
+                                .get("kernel_timings", {})
+                                .get("compute_contact_polygons", {}))
+                    nph_time = get_corrected_timing(nph_dict, "sycl-gpu")
+                    prob_sz  = (store[folder_names[f_idx]][obp][sr]
+                                ["problem_size"].get("problem_sizes", {})
+                                .get("SYCLCandidateTets", {}).get("avg", None))
+
+                rows_raw.append(dict(
+                    Legend      = legend,
+                    SphereResolution     = sr,
+                    ObjectsPerPile         = obp,               # <- control variable
+                    TetsProcess = prob_sz,
+                    NPTime_us   = nph_time
+                ))
+
+    # build tidy DataFrame, keep only finite values
+    df_raw = (pd.DataFrame(rows_raw)
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna(subset=["TetsProcess", "NPTime_us"]))
+    df_raw = df_raw[df_raw["TetsProcess"] > 0]
+    if df_raw.empty:
+        raise ValueError("No finite narrow‑phase timings were found.")
+
+    # 2 ▸ compute speed‑ups (keyed on Spacing + gpp) -----------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "ObjectsPerPile"])["NPTime_us"])
+
+    rows_spd = []
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(
+            sub.set_index(["SphereResolution", "ObjectsPerPile"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["NPTime_us"]
+        rows_spd.append(sub)
+
+    df_spd = (pd.concat(rows_spd, ignore_index=True)
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna(subset=["SpeedUp"]))
+
+    # 3 ▸ global y‑limits --------------------------------------------------
+    y_raw_min = df_raw["NPTime_us"].min() * 0.8
+    y_raw_max = df_raw["NPTime_us"].max() * 1.25
+    if df_spd.empty:                               # fall‑back baseline
+        y_spd_min, y_spd_max = 0.8, 1.25
+    else:
+        y_spd_min = df_spd["SpeedUp"].min() * 0.8
+        y_spd_max = df_spd["SpeedUp"].max() * 1.25
+
+    # 4 ▸ figure grid ------------------------------------------------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    spacing_titles = {}
+    for sr in sphere_resolutions:
+        spacing_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 5 ▸ row‑0 : raw timings ---------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) &
+                       (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            colour = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["TetsProcess"], d["NPTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=colour,
+                      label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_title(spacing_titles.get(sr, sr),
+                     fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("Narrow‑phase time [µs]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # slope indicators
+        xs = df_raw[df_raw["SphereResolution"] == sr]["TetsProcess"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["NPTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 80)
+        _slope_indicator(ax, x0, y0,   2, r"$n^{2}$")
+        _slope_indicator(ax, x0, y0/4, 1, r"$n$")
+
+    # 6 ▸ row‑1 : speed‑up -------------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) &
+                       (df_spd["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            ax.loglog(d["TetsProcess"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8,
+                      color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Tets to process $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    return fig, axes
+
 def plot_broad_phase_perf_speedup(cpu_data, gpu_data,
                                   folder_names, legend_names,
                                   spacings, num_gpp):
@@ -1398,6 +1982,142 @@ def plot_broad_phase_perf_speedup(cpu_data, gpu_data,
         for i, legend in enumerate(gpu_legends):
             d = df_spd[(df_spd["Legend"] == legend) &
                        (df_spd["Spacing"] == spacing)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8,
+                      color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Geometries $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6 ▸ finish -----------------------------------------------------------
+    return fig, axes
+
+
+def plot_broad_phase_perf_speedup_clutter(cpu_data, gpu_data,
+                                  folder_names, legend_names,
+                                  objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw BroadPhase timings | GPU speed‑up) for clutter.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : ndarray shape (2, len(objects_per_pile), len(sphere_resolutions))
+    """
+    # 0 ▸ cosmetics --------------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers  = ["o", "s", "D", "^", "v"]
+    lstyles  = ["-", "--", "-.", ":"]
+
+    # 1 ▸ assemble tidy raw‑timing table ----------------------------------
+    rows_raw  = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for obp in objects_per_pile:
+            for sr in sphere_resolutions:
+                if legend == cpu_label:                # CPU path
+                    bp_dict = (store[folder_names[f_idx]][obp][sr]
+                               ["timing_overall"].get("timings", {})
+                               .get("BroadPhase", {}))
+                    bp_time = get_corrected_timing(bp_dict, "drake-cpu")
+                else:                                  # GPU path
+                    bp_dict = (store[folder_names[f_idx]][obp][sr]
+                               ["kernel_timing"]
+                               .get("kernel_timings", {})
+                               .get("transform_and_broad_phase", {}))
+                    bp_time = get_corrected_timing(bp_dict, "sycl-gpu")
+
+                rows_raw.append(dict(
+                    Legend     = legend,
+                    SphereResolution    = sr,
+                    Bodies     = calculate_actual_objects_clutter(obp),
+                    BPTime_us  = bp_time
+                ))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2 ▸ compute speed‑ups ------------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd    = []
+
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["BPTime_us"])
+
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["BPTime_us"]
+        rows_spd.append(sub)
+
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3 ▸ figure grid – sharey='row' keeps y equal in each row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1, n_rows)
+
+    # common y‑limits
+    y_raw_min, y_raw_max = df_raw["BPTime_us"].min(), df_raw["BPTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+    y_raw_min *= 0.8;  y_raw_max *= 1.25
+    y_spd_min *= 0.8;  y_spd_max *= 1.25
+
+    spacing_titles = {}
+    for sr in sphere_resolutions:
+        spacing_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4 ▸ row‑0 : raw timings ---------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) &
+                       (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["BPTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color,
+                      label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_title(spacing_titles.get(sr, sr),
+                     fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("BroadPhase time [µs]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # internal slope indicators
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["BPTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator_nlogn(ax, x0, y0)   # nlogn
+
+    # 5 ▸ row‑1 : speed‑up -------------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) &
+                       (df_spd["SphereResolution"] == sr)]
             if d.empty:
                 continue
             ax.loglog(d["Bodies"], d["SpeedUp"],
@@ -1560,7 +2280,143 @@ def plot_broad_phase_perf_speedup_vs_num_elements(cpu_data, gpu_data,
 
     # 6 ▸ finish -----------------------------------------------------------
     return fig, axes
+def plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data,
+                                  folder_names, legend_names,
+                                  objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw BroadPhase timings | GPU speed‑up).
 
+    Identical y‑limits within each row, internal slope
+    indicators, colour‑blind palette.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : ndarray shape (2, len(objects_per_pile), len(sphere_resolutions))
+    """
+    # 0 ▸ cosmetics --------------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers  = ["o", "s", "D", "^", "v"]
+    lstyles  = ["-", "--", "-.", ":"]
+
+    # 1 ▸ assemble tidy raw‑timing table ----------------------------------
+    rows_raw  = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for obp in objects_per_pile:
+            for sr in sphere_resolutions:
+                if legend == cpu_label:                # CPU path
+                    bp_dict = (store[folder_names[f_idx]][obp][sr]
+                               ["timing_overall"].get("timings", {})
+                               .get("BroadPhase", {}))
+                    bp_time = get_corrected_timing(bp_dict, "drake-cpu")
+                else:                                  # GPU path
+                    bp_dict = (store[folder_names[f_idx]][obp][sr]
+                               ["kernel_timing"]
+                               .get("kernel_timings", {})
+                               .get("transform_and_broad_phase", {}))
+                    bp_time = get_corrected_timing(bp_dict, "sycl-gpu")
+
+                rows_raw.append(dict(
+                    Legend     = legend,
+                    SphereResolution    = sr,
+                    Bodies     = calculate_number_of_elements_clutter(obp, sr, cpu_data[folder_names[f_idx]][obp][sr]["problem_size"]),
+                    BPTime_us  = bp_time
+                ))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2 ▸ compute speed‑ups ------------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd    = []
+
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["BPTime_us"])
+
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["BPTime_us"]
+        rows_spd.append(sub)
+
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3 ▸ figure grid – sharey='row' keeps y equal in each row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    # common y‑limits
+    y_raw_min, y_raw_max = df_raw["BPTime_us"].min(), df_raw["BPTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+    y_raw_min *= 0.8;  y_raw_max *= 1.25
+    y_spd_min *= 0.8;  y_spd_max *= 1.25
+
+    spacing_titles = {}
+    for sr in sphere_resolutions:
+        spacing_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4 ▸ row‑0 : raw timings ---------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) &
+                       (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["BPTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color,
+                      label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_title(spacing_titles.get(sr, sr),
+                     fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("BroadPhase time [µs]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # internal slope indicators
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["BPTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator_nlogn(ax, x0, y0)   # nlogn
+
+    # 5 ▸ row‑1 : speed‑up -------------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) &
+                       (df_spd["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8,
+                      color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Elements $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6 ▸ finish -----------------------------------------------------------
+    return fig, axes
 def plot_hydroelastic_query_perf_speedup(
         gpu_data, cpu_data, folder_names, legend_names, spacings, num_gpp):
     """
@@ -1687,6 +2543,127 @@ def plot_hydroelastic_query_perf_speedup(
     return fig, axes
 
 
+def plot_hydroelastic_query_perf_speedup_clutter(
+        gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw timings | speed‑up) with:
+      • identical y‑limits within each row (so left & right columns align),
+      • internal O(n²) and O(n) slope indicators,
+      • colour‑blind palette & compact legends.
+    """
+    # 0  Cosmetic defaults -------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers = ["o", "s", "D", "^", "v"]
+    lstyles = ["-", "--", "-.", ":"]
+
+    # 1  Build tidy table of raw timings ----------------------------------
+    rows_raw = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for obp in objects_per_pile:
+            for sr in sphere_resolutions:
+                timing_dict = store[folder_names[f_idx]][obp][sr] \
+                                  ["timing_overall"].get("timings", {})
+                hq_time = get_corrected_timing(
+                    timing_dict.get("HydroelasticQuery", {}),
+                    "drake-cpu" if legend == cpu_label else "sycl-gpu")
+                rows_raw.append(dict(Legend=legend,
+                                     SphereResolution=sr,
+                                     Bodies=calculate_actual_objects_clutter(obp),
+                                     HQTime_us=hq_time))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2  Speed‑up (= CPU / GPU) -------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd = []
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["HQTime_us"])
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["HQTime_us"]
+        rows_spd.append(sub)
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3  Prepare grid – sharey='row' keeps y identical per row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    # Pre‑compute common y‑limits
+    y_raw_min, y_raw_max = df_raw["HQTime_us"].min(), df_raw["HQTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+
+    # Nice padding
+    y_raw_min *= 0.8
+    y_raw_max *= 1.25
+    y_spd_min *= 0.8
+    y_spd_max *= 1.25
+
+    sphere_resolution_titles = {}
+    for sr in sphere_resolutions:
+        sphere_resolution_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4  Plot raw timings (row 0) -----------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) & (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["HQTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color, label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_title(sphere_resolution_titles.get(sr, sr), fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("HydroelasticQuery time [µs]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # Slope indicators – place safely inside limits
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["HQTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator(ax, x0, y0, 2, r"$n^{2}$")          # quadratic
+        _slope_indicator(ax, x0, y0 / 4, 1, r"$n$")          # linear (below)
+
+    # 5  Plot speed‑up (row 1) --------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) & (df_spd["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Geometries $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6  Finish ------------------------------------------------------------
+    return fig, axes
+
+
 def plot_hydroelastic_query_perf_speedup_vs_num_elements(
         gpu_data, cpu_data, folder_names, legend_names, spacings, num_gpp):
     """
@@ -1793,6 +2770,127 @@ def plot_hydroelastic_query_perf_speedup_vs_num_elements(
         ax = axes[1, c]
         for i, legend in enumerate(gpu_legends):
             d = df_spd[(df_spd["Legend"] == legend) & (df_spd["Spacing"] == spacing)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Elements $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6  Finish ------------------------------------------------------------
+    return fig, axes
+
+
+def plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(
+        gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw timings | speed‑up) with:
+      • identical y‑limits within each row (so left & right columns align),
+      • internal O(n²) and O(n) slope indicators,
+      • colour‑blind palette & compact legends.
+    """
+    # 0  Cosmetic defaults -------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers = ["o", "s", "D", "^", "v"]
+    lstyles = ["-", "--", "-.", ":"]
+
+    # 1  Build tidy table of raw timings ----------------------------------
+    rows_raw = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for sr in sphere_resolutions:
+            for obp in objects_per_pile:
+                timing_dict = store[folder_names[f_idx]][obp][sr] \
+                                ["timing_overall"].get("timings", {})
+                hq_time = get_corrected_timing(
+                    timing_dict.get("HydroelasticQuery", {}),
+                    "drake-cpu" if legend == cpu_label else "sycl-gpu")
+                rows_raw.append(dict(Legend=legend,
+                                     SphereResolution=sr,
+                                     Bodies=calculate_number_of_elements_clutter(obp, sr, cpu_data[folder_names[f_idx]][obp][sr]["problem_size"]),
+                                     HQTime_us=hq_time))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2  Speed‑up (= CPU / GPU) -------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd = []
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["HQTime_us"])
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["HQTime_us"]
+        rows_spd.append(sub)
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3  Prepare grid – sharey='row' keeps y identical per row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    # Pre‑compute common y‑limits
+    y_raw_min, y_raw_max = df_raw["HQTime_us"].min(), df_raw["HQTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+
+    # Nice padding
+    y_raw_min *= 0.8
+    y_raw_max *= 1.25
+    y_spd_min *= 0.8
+    y_spd_max *= 1.25
+
+    sphere_resolution_titles = {}
+    for sr in sphere_resolutions:
+        sphere_resolution_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4  Plot raw timings (row 0) -----------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) & (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["HQTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color, label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_title(sphere_resolution_titles.get(sr, sr), fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("HydroelasticQuery time [µs]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # Slope indicators – place safely inside limits
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["HQTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator(ax, x0, y0, 2, r"$n^{2}$")          # quadratic
+        _slope_indicator(ax, x0, y0 / 4, 1, r"$n$")          # linear (below)
+
+    # 5  Plot speed‑up (row 1) --------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) & (df_spd["SphereResolution"] == sr)]
             if d.empty:
                 continue
             ax.loglog(d["Bodies"], d["SpeedUp"],
