@@ -45,7 +45,7 @@ def calculate_actual_objects_clutter(obp):
     Each pile has 1 table, and each pile has obp objects.
     Formula: 1 + obp
     """
-    return int(obp) * 4
+    return int(obp) * 4 + 5
 
 def calculate_number_of_elements_objects_scaling(gpp, problem_size_data):
     num_floors = 1
@@ -2914,3 +2914,257 @@ def plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(
 
     # 6  Finish ------------------------------------------------------------
     return fig, axes
+
+def plot_advance_to_query_perf_speedup_vs_num_elements_clutter(
+        gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw timings | speed‑up) with:
+      • identical y‑limits within each row (so left & right columns align),
+      • internal O(n²) and O(n) slope indicators,
+      • colour‑blind palette & compact legends.
+    Uses advance_to timing data instead of HydroelasticQuery.
+    """
+    # 0  Cosmetic defaults -------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers = ["o", "s", "D", "^", "v"]
+    lstyles = ["-", "--", "-.", ":"]
+
+    # 1  Build tidy table of raw timings ----------------------------------
+    rows_raw = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for sr in sphere_resolutions:
+            for obp in objects_per_pile:
+                advance_to_data = store[folder_names[f_idx]][obp][sr]["advance_to"]
+                advance_to_time = advance_to_data.get("advance_to_time", 0.0)
+                # Convert to microseconds for consistency with other plots
+                # advance_to_time_us = advance_to_time * 1000.0
+                advance_to_time_us = advance_to_time
+                rows_raw.append(dict(Legend=legend,
+                               SphereResolution=sr,
+                               Bodies=calculate_number_of_elements_clutter(obp, sr, store[folder_names[f_idx]][obp][sr]["problem_size"]),
+                               AdvanceToTime_us=advance_to_time_us))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2  Speed‑up (= CPU / GPU) -------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd = []
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["AdvanceToTime_us"])
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["AdvanceToTime_us"]
+        rows_spd.append(sub)
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3  Prepare grid – sharey='row' keeps y identical per row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    # Pre‑compute common y‑limits
+    y_raw_min, y_raw_max = df_raw["AdvanceToTime_us"].min(), df_raw["AdvanceToTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+
+    # Nice padding
+    y_raw_min *= 0.8
+    y_raw_max *= 1.25
+    y_spd_min *= 0.8
+    y_spd_max *= 1.25
+    
+    x_min = df_raw["Bodies"].min() * 0.8
+    x_max = df_raw["Bodies"].max() * 1.25
+
+    sphere_resolution_titles = {}
+    for sr in sphere_resolutions:
+        sphere_resolution_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4  Plot raw timings (row 0) -----------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) & (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["AdvanceToTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color, label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_xlim(x_min, x_max)
+        ax.set_title(sphere_resolution_titles.get(sr, sr), fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("AdvanceTo time [s]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # Slope indicators – place safely inside limits
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["AdvanceToTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator(ax, x0, y0, 2, r"$n^{2}$")          # quadratic
+        _slope_indicator(ax, x0, y0 / 4, 1, r"$n$")          # linear (below)
+
+    # 5  Plot speed‑up (row 1) --------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) & (df_spd["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.set_xlim(x_min, x_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Elements $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6  Finish ------------------------------------------------------------
+    return fig, axes
+
+
+def plot_advance_to_query_perf_speedup_vs_obp_clutter(
+        gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions):
+    """
+    Two‑row grid (raw timings | speed‑up) with:
+      • identical y‑limits within each row (so left & right columns align),
+      • internal O(n²) and O(n) slope indicators,
+      • colour‑blind palette & compact legends.
+    Uses advance_to timing data instead of HydroelasticQuery.
+    """
+    # 0  Cosmetic defaults -------------------------------------------------
+    sns.set_style("ticks")
+    sns.set_palette("colorblind")
+    markers = ["o", "s", "D", "^", "v"]
+    lstyles = ["-", "--", "-.", ":"]
+
+    # 1  Build tidy table of raw timings ----------------------------------
+    rows_raw = []
+    cpu_label = next(lbl for lbl in legend_names if "cpu" in lbl.lower())
+
+    for f_idx, legend in enumerate(legend_names):
+        store = cpu_data if legend == cpu_label else gpu_data
+        for sr in sphere_resolutions:
+            for obp in objects_per_pile:
+                advance_to_data = store[folder_names[f_idx]][obp][sr]["advance_to"]
+                advance_to_time = advance_to_data.get("advance_to_time", 0.0)
+                # Convert to microseconds for consistency with other plots
+                # advance_to_time_us = advance_to_time * 1000.0
+                advance_to_time_us = advance_to_time
+                rows_raw.append(dict(Legend=legend,
+                               SphereResolution=sr,
+                               Bodies=calculate_actual_objects_clutter(obp),
+                               AdvanceToTime_us=advance_to_time_us))
+
+    df_raw = pd.DataFrame(rows_raw)
+
+    # 2  Speed‑up (= CPU / GPU) -------------------------------------------
+    gpu_legends = [l for l in legend_names if l != cpu_label]
+    rows_spd = []
+    cpu_tbl = (df_raw[df_raw["Legend"] == cpu_label]
+               .set_index(["SphereResolution", "Bodies"])["AdvanceToTime_us"])
+    for legend in gpu_legends:
+        sub = df_raw[df_raw["Legend"] == legend].copy()
+        sub["CPU_us"] = cpu_tbl.reindex(sub.set_index(["SphereResolution", "Bodies"]).index).values
+        sub["SpeedUp"] = sub["CPU_us"] / sub["AdvanceToTime_us"]
+        rows_spd.append(sub)
+    df_spd = pd.concat(rows_spd, ignore_index=True)
+
+    # 3  Prepare grid – sharey='row' keeps y identical per row ------------
+    n_cols = len(sphere_resolutions)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.0 * n_cols, 6.5),
+                             sharex="col", sharey="row",
+                             gridspec_kw=dict(hspace=0.10, wspace=0.15))
+    if n_cols == 1:
+        axes = np.array(axes).reshape(2, 1)
+
+    # Pre‑compute common y‑limits
+    y_raw_min, y_raw_max = df_raw["AdvanceToTime_us"].min(), df_raw["AdvanceToTime_us"].max()
+    y_spd_min, y_spd_max = df_spd["SpeedUp"].min(), df_spd["SpeedUp"].max()
+
+    # Nice padding
+    y_raw_min *= 0.8
+    y_raw_max *= 1.25
+    y_spd_min *= 0.8
+    y_spd_max *= 1.25
+    
+    x_min = df_raw["Bodies"].min() * 0.8
+    x_max = df_raw["Bodies"].max() * 1.25
+
+    sphere_resolution_titles = {}
+    for sr in sphere_resolutions:
+        sphere_resolution_titles[sr] = f"Sphere Resolution - {sr}"
+
+    # 4  Plot raw timings (row 0) -----------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[0, c]
+        for i, legend in enumerate(legend_names):
+            d = df_raw[(df_raw["Legend"] == legend) & (df_raw["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            color = "0.25" if legend == cpu_label else sns.color_palette()[i % 10]
+            ax.loglog(d["Bodies"], d["AdvanceToTime_us"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=color, label=legend, zorder=3)
+
+        ax.set_ylim(y_raw_min, y_raw_max)
+        ax.set_xlim(x_min, x_max)
+        ax.set_title(sphere_resolution_titles.get(sr, sr), fontsize=13, weight="bold")
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        if c == 0:
+            ax.set_ylabel("AdvanceTo time [s]", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+        # Slope indicators – place safely inside limits
+        xs = df_raw[df_raw["SphereResolution"] == sr]["Bodies"].values
+        ys = df_raw[df_raw["SphereResolution"] == sr]["AdvanceToTime_us"].values
+        x0 = np.percentile(xs, 25)
+        y0 = np.percentile(ys, 30)
+        _slope_indicator(ax, x0, y0, 2, r"$n^{2}$")          # quadratic
+        _slope_indicator(ax, x0, y0 / 4, 1, r"$n$")          # linear (below)
+
+    # 5  Plot speed‑up (row 1) --------------------------------------------
+    for c, sr in enumerate(sphere_resolutions):
+        ax = axes[1, c]
+        for i, legend in enumerate(gpu_legends):
+            d = df_spd[(df_spd["Legend"] == legend) & (df_spd["SphereResolution"] == sr)]
+            if d.empty:
+                continue
+            ax.loglog(d["Bodies"], d["SpeedUp"],
+                      marker=markers[i % len(markers)],
+                      ls=lstyles[i % len(lstyles)],
+                      ms=5, lw=1.8, color=sns.color_palette()[i % 10],
+                      label=legend, zorder=3)
+
+        ax.axhline(1.0, color="0.3", lw=0.8, alpha=0.7)
+        ax.set_ylim(y_spd_min, y_spd_max)
+        ax.set_xlim(x_min, x_max)
+        ax.grid(True, ls="-", lw=0.3, color="0.8", which="both")
+        ax.set_xlabel("Number of Bodies $n$", fontsize=12)
+        if c == 0:
+            ax.set_ylabel("CPU / GPU speed‑up", fontsize=12)
+            ax.legend(frameon=False, fontsize=9, loc="upper left")
+
+    # 6  Finish ------------------------------------------------------------
+    return fig, axes
+    

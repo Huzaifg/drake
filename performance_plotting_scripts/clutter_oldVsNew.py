@@ -22,7 +22,7 @@ import seaborn as sns
 import sys
 import argparse
 import numpy as np
-from utils import get_data, plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter, plot_hydroelastic_query_perf_speedup_clutter, plot_broad_phase_perf_speedup_clutter, plot_broad_phase_perf_speedup_vs_num_elements_clutter, plot_narrow_phase_query_perf_speedup_clutter
+from utils import get_data, plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter, plot_hydroelastic_query_perf_speedup_clutter, plot_broad_phase_perf_speedup_clutter, plot_broad_phase_perf_speedup_vs_num_elements_clutter, plot_narrow_phase_query_perf_speedup_clutter, plot_advance_to_query_perf_speedup_vs_num_elements_clutter, plot_advance_to_query_perf_speedup_vs_obp_clutter
 
 
 
@@ -70,6 +70,10 @@ def main():
                     json_path_problem_size = f"{base_dir}/{folder_name}/{demo_name}_{obp}_1.0000_{sr}_3_drake-cpu_problem_size.json"
                     data_problem_size = get_data(json_path_problem_size)
                     cpu_data[folder_name][obp][sr]["problem_size"] = data_problem_size
+                    
+                    json_path_advance_to = f"{base_dir}/{folder_name}/{demo_name}_{obp}_1.0000_{sr}_3_drake-cpu_timing_advance_to.json"
+                    data_advance_to = get_data(json_path_advance_to)
+                    cpu_data[folder_name][obp][sr]["advance_to"] = data_advance_to
         else:
             # GPU data
             if folder_name not in gpu_data:
@@ -93,40 +97,56 @@ def main():
                     data_problem_size = get_data(json_path_problem_size)
                     gpu_data[folder_name][obp][sr]["problem_size"] = data_problem_size
                     
+                    json_path_advance_to = f"{base_dir}/{folder_name}/{demo_name}_{obp}_1.0000_{sr}_3_sycl-gpu_timing_advance_to.json"
+                    data_advance_to = get_data(json_path_advance_to)
+                    gpu_data[folder_name][obp][sr]["advance_to"] = data_advance_to
+                    
     # Create plots directory
-    plot_dir = "plots_gpu_comparison_clutter"
+    plot_dir = "plots_gpu_comparison_clutter_opt1"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
     
 
     # Plot broad phase timing vs actual number of objects (log-log)
-    fig, axes = plot_hydroelastic_query_perf_speedup_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
-    plt.savefig(f"{base_dir}/{plot_dir}/hydroelastic_query_perf_speedup.png", dpi=600)
-    print(f"Saved hydroelastic query perf speedup plot to {base_dir}/{plot_dir}/hydroelastic_query_perf_speedup.png")
+    # fig, axes = plot_hydroelastic_query_perf_speedup_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    # plt.savefig(f"{base_dir}/{plot_dir}/hydroelastic_query_perf_speedup.png", dpi=600)
+    # print(f"Saved hydroelastic query perf speedup plot to {base_dir}/{plot_dir}/hydroelastic_query_perf_speedup.png")
+    # plt.show()
+    # plt.close()
+    
+    # fig, axes = plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    # plt.savefig(f"{base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png", dpi=600)
+    # print(f"Saved hydroelastic query perf speedup vs num elements plot to {base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png")
+    # plt.show()
+    # plt.close()
+    
+    # fig, axes = plot_broad_phase_perf_speedup_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    # plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png", dpi=600)
+    # print(f"Saved broad phase query perf speedup plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png")
+    # plt.show()
+    # plt.close()
+    
+    # fig, axes = plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    # plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png", dpi=600)
+    # print(f"Saved broad phase query perf speedup vs num elements plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png")
+    # plt.show()
+    # plt.close()
+    
+    # fig, axes = plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    # plt.savefig(f"{base_dir}/{plot_dir}/narrow_phase_query_perf_speedup.png", dpi=600)
+    # print(f"Saved narrow phase query perf speedup plot to {base_dir}/{plot_dir}/narrow_phase_query_perf_speedup.png")
+    # plt.show()
+    # plt.close()
+    
+    fig, axes = plot_advance_to_query_perf_speedup_vs_num_elements_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    plt.savefig(f"{base_dir}/{plot_dir}/advance_to_query_perf_speedup_vs_num_elements.png", dpi=600)
+    print(f"Saved advance_to query perf speedup vs num elements plot to {base_dir}/{plot_dir}/advance_to_query_perf_speedup_vs_num_elements.png")
     plt.show()
     plt.close()
     
-    fig, axes = plot_hydroelastic_query_perf_speedup_vs_num_elements_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
-    plt.savefig(f"{base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png", dpi=600)
-    print(f"Saved hydroelastic query perf speedup vs num elements plot to {base_dir}/{plot_dir}/hydroelastic_query_perf_speedup_vs_num_elements.png")
-    plt.show()
-    plt.close()
-    
-    fig, axes = plot_broad_phase_perf_speedup_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
-    plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png", dpi=600)
-    print(f"Saved broad phase query perf speedup plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup.png")
-    plt.show()
-    plt.close()
-    
-    fig, axes = plot_broad_phase_perf_speedup_vs_num_elements_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
-    plt.savefig(f"{base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png", dpi=600)
-    print(f"Saved broad phase query perf speedup vs num elements plot to {base_dir}/{plot_dir}/broad_phase_query_perf_speedup_vs_num_elements.png")
-    plt.show()
-    plt.close()
-    
-    fig, axes = plot_narrow_phase_query_perf_speedup_clutter(cpu_data, gpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
-    plt.savefig(f"{base_dir}/{plot_dir}/narrow_phase_query_perf_speedup.png", dpi=600)
-    print(f"Saved narrow phase query perf speedup plot to {base_dir}/{plot_dir}/narrow_phase_query_perf_speedup.png")
+    fig, axes = plot_advance_to_query_perf_speedup_vs_obp_clutter(gpu_data, cpu_data, folder_names, legend_names, objects_per_pile, sphere_resolutions)
+    plt.savefig(f"{base_dir}/{plot_dir}/advance_to_query_perf_speedup_vs_obp.png", dpi=600)
+    print(f"Saved advance_to query perf speedup vs obp plot to {base_dir}/{plot_dir}/advance_to_query_perf_speedup_vs_obp.png")
     plt.show()
     plt.close()
 

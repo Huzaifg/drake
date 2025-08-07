@@ -37,7 +37,7 @@ def main():
     
     
     run_types = ["sycl-gpu", "drake-cpu"]
-    perf_folder = "performance_jsons_clutter"
+    perf_folder = "performance_jsons_clutter_opt1"
 
     # Store all data in a nested dictionary: all_data[run_type][spacing][num_gpp][data_type]
     all_data = {run_type: {} for run_type in run_types}
@@ -67,7 +67,7 @@ def main():
                     all_data[run_type][obp][sr]["kernel_timing"] = data_kernel_timing
                    
     plot_faces_inserted_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
-    plot_dir = "plots_clutter"
+    plot_dir = "plots_clutter_opt1"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
     plt.savefig(f"{base_dir}/{plot_dir}/clutter_faces_inserted_vs_obp.png",dpi=600)
@@ -76,7 +76,7 @@ def main():
     plt.close()
     
     plot_candidate_tets_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
-    plot_dir = "plots_clutter"
+    plot_dir = "plots_clutter_opt1"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
     plt.savefig(f"{base_dir}/{plot_dir}/clutter_candidate_tets_vs_obp.png",dpi=600)
@@ -85,7 +85,7 @@ def main():
     plt.close()
     
     plot_broad_narrow_misc_vs_obp(all_data, run_types, objects_per_pile, sphere_resolutions)
-    plot_dir = "plots_clutter"
+    plot_dir = "plots_clutter_opt1"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
     plt.savefig(f"{base_dir}/{plot_dir}/clutter_broad_narrow_misc_vs_obp.png",dpi=600)
@@ -94,7 +94,7 @@ def main():
     plt.close()
     
     plot_broad_narrow_misc_vs_num_elements_clutter(all_data, run_types, objects_per_pile, sphere_resolutions)
-    plot_dir = "plots_clutter"
+    plot_dir = "plots_clutter_opt1"
     if not os.path.exists(f"{base_dir}/{plot_dir}"):
         os.makedirs(f"{base_dir}/{plot_dir}")
     plt.savefig(f"{base_dir}/{plot_dir}/clutter_broad_narrow_misc_vs_num_elements_clutter.png",dpi=600)
