@@ -1358,7 +1358,10 @@ void DoScalarDependentDefinitions(py::module m, T) {
                 bool>(&Class::GetActuatorNames),
             py::arg("model_instance"),
             py::arg("add_model_instance_prefix") = false,
-            cls_doc.GetActuatorNames.doc_2args);
+            cls_doc.GetActuatorNames.doc_2args)
+        .def("PrintPerformanceStats", &Class::PrintPerformanceStats,
+            py::arg("scene_graph"), py::arg("context"),
+            py::arg("base_json_path"), py::arg("sim_time") = 0.0);
   }
 
   {
